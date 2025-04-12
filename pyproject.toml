@@ -18,7 +18,9 @@ dependencies = [
     "plotly (==5.14.1)",
     "nbformat (==5.10.4)",
     "jinja2 (==3.1.4)",
-    "seaborn (==0.13.2)"
+    "seaborn (==0.13.2)",
+    "finrl @ git+https://github.com/AI4Finance-Foundation/FinRL.git",
+    "pandas-market-calendars (>=5.0.0,<6.0.0)"
 ]
 
 

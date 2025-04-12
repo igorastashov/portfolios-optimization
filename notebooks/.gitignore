@@ -1,1 +1,5 @@
 markowitz_return_series.csv
+results
+trained_models
+tensorboard_log
+datasets
