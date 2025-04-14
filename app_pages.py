@@ -13,6 +13,7 @@ from portfolios_optimization.portfolio_optimizer import optimize_markowitz_portf
 from portfolios_optimization.portfolio_analysis import calculate_metrics, plot_efficient_frontier
 from portfolios_optimization.visualization import plot_portfolio_performance, plot_asset_allocation
 from portfolios_optimization.model_trainer import train_model, load_trained_model
+from portfolios_optimization.authentication import get_user_portfolios, get_user_portfolio
 
 def render_dashboard(price_data, model_returns, model_actions, assets):
     """Отображение страницы Dashboard"""
@@ -576,6 +577,246 @@ def render_backtest(model_returns):
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.warning("No data available for the selected period.")
+
+def render_account_dashboard(username, price_data, assets):
+    """Отображение страницы аккаунта в стиле Bybit"""
+    st.header("Единый торговый аккаунт")
+    
+    # Получение данных о портфелях пользователя
+    from portfolios_optimization.authentication import get_user_portfolios, get_user_portfolio
+    
+    # Обновление времени
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.caption(f"Последнее обновление: {current_time}")
+    
+    # Получение портфелей пользователя
+    portfolios = get_user_portfolios(username)
+    
+    if not portfolios:
+        st.info("У вас пока нет созданных портфелей. Создайте портфель в разделе 'Мой кабинет'.")
+        return
+    
+    # Объединение всех активов из портфелей пользователя
+    all_assets = {}
+    total_balance = 0
+    
+    for portfolio_name in portfolios:
+        portfolio_data = get_user_portfolio(username, portfolio_name)
+        if portfolio_data and "assets" in portfolio_data:
+            # Принимаем, что у нас есть условная сумма в 100,000 USD, которые распределяются по активам
+            portfolio_capital = 100000  # Например, 100K USD на портфель
+            
+            for asset, weight in portfolio_data["assets"].items():
+                asset_value = portfolio_capital * weight
+                if asset in all_assets:
+                    all_assets[asset] += asset_value
+                else:
+                    all_assets[asset] = asset_value
+                total_balance += asset_value
+    
+    # Основные показатели аккаунта
+    col1, col2, col3, col4 = st.columns(4)
+    
+    # Расчет P&L за сегодня (демонстрационные данные)
+    today_pnl = np.random.uniform(-0.02, 0.03) * total_balance
+    daily_pnl_percent = today_pnl / total_balance * 100
+    
+    with col1:
+        st.metric("Общий баланс", f"${total_balance:,.2f}")
+    
+    with col2:
+        arrow = "▲" if today_pnl >= 0 else "▼"
+        color = "green" if today_pnl >= 0 else "red"
+        st.metric("P&L за сегодня", f"{arrow} ${abs(today_pnl):,.2f}", 
+                 f"{arrow} {abs(daily_pnl_percent):.2f}%",
+                 delta_color="normal" if today_pnl >= 0 else "inverse")
+    
+    with col3:
+        # Предположим, что у нас есть процентное изменение за 7 дней
+        week_change = np.random.uniform(-0.05, 0.08) * 100
+        arrow_week = "▲" if week_change >= 0 else "▼"
+        st.metric("P&L за 7 дней", f"{arrow_week} ${abs(week_change * total_balance / 100):,.2f}", 
+                 f"{arrow_week} {abs(week_change):.2f}%",
+                 delta_color="normal" if week_change >= 0 else "inverse")
+    
+    with col4:
+        # Маржа (для демонстрации)
+        margin_used = total_balance * 0.3  # 30% используется как маржа
+        st.metric("Используемая маржа", f"${margin_used:,.2f}", f"{margin_used/total_balance*100:.1f}%")
+    
+    # Таблица с активами
+    st.subheader("Ваши активы")
+    
+    # Создаем датафрейм с активами
+    assets_data = []
+    for asset, value in all_assets.items():
+        # Получаем текущую цену актива (для демонстрации берем последнюю из исторических данных)
+        current_price = price_data[asset].iloc[-1] if asset in price_data.columns else np.nan
+        
+        # Расчет изменения за 24 часа (для демонстрации)
+        price_24h_ago = price_data[asset].iloc[-2] if asset in price_data.columns and len(price_data) > 1 else current_price
+        change_24h = (current_price - price_24h_ago) / price_24h_ago * 100 if not np.isnan(current_price) and price_24h_ago != 0 else 0
+        
+        assets_data.append({
+            "Актив": asset,
+            "Цена (USD)": current_price,
+            "Капитал (USD)": value,
+            "Изменение 24ч (%)": change_24h,
+            "P&L 24ч (USD)": value * change_24h / 100
+        })
+    
+    # Сортировка по капиталу (по убыванию)
+    assets_df = pd.DataFrame(assets_data)
+    assets_df = assets_df.sort_values("Капитал (USD)", ascending=False)
+    
+    # Форматирование таблицы
+    formatted_df = assets_df.copy()
+    formatted_df["Цена (USD)"] = formatted_df["Цена (USD)"].apply(lambda x: f"${x:,.2f}" if not np.isnan(x) else "N/A")
+    formatted_df["Капитал (USD)"] = formatted_df["Капитал (USD)"].apply(lambda x: f"${x:,.2f}")
+    formatted_df["Изменение 24ч (%)"] = formatted_df["Изменение 24ч (%)"].apply(
+        lambda x: f"**+{x:.2f}%**" if x > 0 else (f"**{x:.2f}%**" if x < 0 else "0.00%")
+    )
+    formatted_df["P&L 24ч (USD)"] = formatted_df["P&L 24ч (USD)"].apply(
+        lambda x: f"**+${x:,.2f}**" if x > 0 else (f"**-${abs(x):,.2f}**" if x < 0 else "$0.00")
+    )
+    
+    # Стилизация таблицы с использованием HTML и CSS
+    st.markdown(
+        formatted_df.to_html(escape=False, index=False),
+        unsafe_allow_html=True
+    )
+    
+    # График распределения активов
+    st.subheader("Распределение капитала")
+    fig = px.pie(
+        assets_df,
+        values="Капитал (USD)",
+        names="Актив",
+        title="Распределение капитала по активам"
+    )
+    st.plotly_chart(fig)
+    
+    # Секция P&L статистики
+    st.header("P&L Аккаунта")
+    
+    # Выбор временного интервала
+    interval = st.radio(
+        "Выберите интервал:",
+        ["7d", "30d", "60d", "180d"],
+        horizontal=True
+    )
+    
+    # Определение количества дней для выбранного интервала
+    days_map = {"7d": 7, "30d": 30, "60d": 60, "180d": 180}
+    days = days_map[interval]
+    
+    # Генерация демонстрационных данных для P&L
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=days)
+    date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+    
+    # Генерация случайных данных для P&L
+    np.random.seed(42)  # Для воспроизводимости результатов
+    daily_pnl_values = np.random.normal(0, total_balance * 0.01, len(date_range))
+    
+    # Накопленный P&L
+    cumulative_pnl = np.cumsum(daily_pnl_values)
+    
+    # Процент P&L относительно начального капитала
+    percentage_pnl = cumulative_pnl / total_balance * 100
+    
+    pnl_data = pd.DataFrame({
+        'Дата': date_range,
+        'Суточный P&L': daily_pnl_values,
+        'Суммарный P&L': cumulative_pnl,
+        'Суммарный P&L (%)': percentage_pnl
+    })
+    
+    # Отображение суммарных метрик
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        final_pnl = cumulative_pnl[-1]
+        arrow = "▲" if final_pnl >= 0 else "▼"
+        st.metric(
+            f"Суммарный P&L за {interval}",
+            f"{arrow} ${abs(final_pnl):,.2f}",
+            delta_color="normal" if final_pnl >= 0 else "inverse"
+        )
+    
+    with col2:
+        final_pnl_pct = percentage_pnl[-1]
+        arrow = "▲" if final_pnl_pct >= 0 else "▼"
+        st.metric(
+            f"Суммарный P&L (%) за {interval}",
+            f"{arrow} {abs(final_pnl_pct):.2f}%",
+            delta_color="normal" if final_pnl_pct >= 0 else "inverse"
+        )
+    
+    # Графики P&L
+    # Создаем subplot с двумя графиками
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        subplot_titles=("Суммарный P&L и P&L (%)", "Суточный P&L"),
+                        vertical_spacing=0.12,
+                        specs=[[{"secondary_y": True}], [{"secondary_y": False}]])
+    
+    # Линия суммарного P&L
+    fig.add_trace(
+        go.Scatter(
+            x=pnl_data['Дата'],
+            y=pnl_data['Суммарный P&L'],
+            name="Суммарный P&L (USD)",
+            line=dict(color='blue', width=2)
+        ),
+        row=1, col=1
+    )
+    
+    # Линия процентного P&L на вторичной оси Y
+    fig.add_trace(
+        go.Scatter(
+            x=pnl_data['Дата'],
+            y=pnl_data['Суммарный P&L (%)'],
+            name="Суммарный P&L (%)",
+            line=dict(color='purple', width=2, dash='dot')
+        ),
+        row=1, col=1,
+        secondary_y=True
+    )
+    
+    # Столбчатый график суточного P&L
+    daily_colors = ['green' if x >= 0 else 'red' for x in pnl_data['Суточный P&L']]
+    
+    fig.add_trace(
+        go.Bar(
+            x=pnl_data['Дата'],
+            y=pnl_data['Суточный P&L'],
+            name="Суточный P&L",
+            marker_color=daily_colors
+        ),
+        row=2, col=1
+    )
+    
+    # Обновление макета
+    fig.update_layout(
+        height=700,
+        title_text=f"P&L за {interval}",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
+    )
+    
+    # Обновление подписей осей
+    fig.update_yaxes(title_text="USD", row=1, col=1)
+    fig.update_yaxes(title_text="%", row=1, col=1, secondary_y=True)
+    fig.update_yaxes(title_text="USD", row=2, col=1)
+    fig.update_xaxes(title_text="Дата", row=2, col=1)
+    
+    # Отображение графика
+    st.plotly_chart(fig, use_container_width=True)
 
 def render_about():
     """Отображение страницы 'About'"""

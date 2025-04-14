@@ -23,7 +23,7 @@ from portfolios_optimization.authentication import (
 # Импорт страниц приложения
 from app_pages import (
     render_dashboard, render_portfolio_optimization, render_model_training, 
-    render_model_comparison, render_backtest, render_about
+    render_model_comparison, render_backtest, render_about, render_account_dashboard
 )
 
 # Конфигурация страницы
@@ -149,7 +149,7 @@ else:
     st.sidebar.header("Навигация")
     page = st.sidebar.radio(
         "Выберите раздел",
-        ["Мой кабинет", "Dashboard", "Portfolio Optimization", "Model Training", "Model Comparison", "Backtest Results", "About"]
+        ["Мой кабинет", "Единый торговый аккаунт", "Dashboard", "Portfolio Optimization", "Model Training", "Model Comparison", "Backtest Results", "About"]
     )
     
     st.session_state.active_page = page
@@ -407,6 +407,10 @@ else:
                                 st.error(message)
         else:
             st.error("Не удалось загрузить информацию о пользователе")
+    
+    # Страница единого торгового аккаунта в стиле Bybit
+    elif page == "Единый торговый аккаунт":
+        render_account_dashboard(st.session_state.username, price_data, assets)
     
     # Подключение страниц из app_pages.py
     elif page == "Dashboard":
