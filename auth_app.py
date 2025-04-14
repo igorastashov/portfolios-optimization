@@ -23,7 +23,8 @@ from portfolios_optimization.authentication import (
 # Импорт страниц приложения
 from app_pages import (
     render_dashboard, render_portfolio_optimization, render_model_training, 
-    render_model_comparison, render_backtest, render_about, render_account_dashboard
+    render_model_comparison, render_backtest, render_about, render_account_dashboard,
+    render_transactions_manager
 )
 
 # Конфигурация страницы
@@ -149,7 +150,7 @@ else:
     st.sidebar.header("Навигация")
     page = st.sidebar.radio(
         "Выберите раздел",
-        ["Мой кабинет", "Единый торговый аккаунт", "Dashboard", "Portfolio Optimization", "Model Training", "Model Comparison", "Backtest Results", "About"]
+        ["Мой кабинет", "Управление активами", "Единый торговый аккаунт", "Dashboard", "Portfolio Optimization", "Model Training", "Model Comparison", "Backtest Results", "About"]
     )
     
     st.session_state.active_page = page
@@ -411,6 +412,10 @@ else:
     # Страница единого торгового аккаунта в стиле Bybit
     elif page == "Единый торговый аккаунт":
         render_account_dashboard(st.session_state.username, price_data, assets)
+    
+    # Страница управления активами и транзакциями
+    elif page == "Управление активами":
+        render_transactions_manager(st.session_state.username, price_data, assets)
     
     # Подключение страниц из app_pages.py
     elif page == "Dashboard":

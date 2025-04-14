@@ -13,7 +13,10 @@ from portfolios_optimization.portfolio_optimizer import optimize_markowitz_portf
 from portfolios_optimization.portfolio_analysis import calculate_metrics, plot_efficient_frontier
 from portfolios_optimization.visualization import plot_portfolio_performance, plot_asset_allocation
 from portfolios_optimization.model_trainer import train_model, load_trained_model
-from portfolios_optimization.authentication import get_user_portfolios, get_user_portfolio
+from portfolios_optimization.authentication import (
+    get_user_portfolios, get_user_portfolio, get_user_transactions, 
+    add_transaction, delete_transaction, get_portfolio_with_quantities
+)
 
 def render_dashboard(price_data, model_returns, model_actions, assets):
     """Отображение страницы Dashboard"""
@@ -857,4 +860,357 @@ def render_about():
     - Matplotlib and Plotly for visualization
     - SciPy for optimization algorithms
     - FinRL for reinforcement learning models
-    """) 
+    """)
+
+def render_transactions_manager(username, price_data, assets):
+    """Отображение страницы управления транзакциями в стиле CoinMarketCap"""
+    st.header("Управление активами и транзакциями")
+    
+    # Получение текущих транзакций пользователя
+    transactions = get_user_transactions(username)
+    
+    # Получение текущего портфеля с количествами
+    portfolio_data = get_portfolio_with_quantities(username)
+    
+    # Вкладки для разных функций
+    tabs = st.tabs(["Мой портфель", "Добавить транзакцию", "История транзакций"])
+    
+    # Вкладка "Мой портфель"
+    with tabs[0]:
+        st.subheader("Текущий портфель")
+        
+        if not portfolio_data or not any(portfolio_data["quantities"].values()):
+            st.info("У вас пока нет активов в портфеле. Добавьте транзакции, чтобы сформировать портфель.")
+        else:
+            # Создание DataFrame для отображения портфеля
+            portfolio_items = []
+            
+            total_portfolio_value = 0
+            total_profit_loss = 0
+            
+            for asset, quantity in portfolio_data["quantities"].items():
+                if quantity > 0:
+                    # Получение текущей цены актива
+                    current_price = price_data[asset].iloc[-1] if asset in price_data.columns else 0
+                    
+                    # Средняя цена покупки
+                    avg_buy_price = portfolio_data["avg_prices"].get(asset, 0)
+                    
+                    # Расчет текущей стоимости и прибыли/убытка
+                    current_value = quantity * current_price
+                    invested_value = quantity * avg_buy_price
+                    profit_loss = current_value - invested_value
+                    profit_loss_percent = (profit_loss / invested_value * 100) if invested_value > 0 else 0
+                    
+                    total_portfolio_value += current_value
+                    total_profit_loss += profit_loss
+                    
+                    # Расчет изменения за 24 часа
+                    price_24h_ago = price_data[asset].iloc[-2] if asset in price_data.columns and len(price_data) > 1 else current_price
+                    change_24h = (current_price - price_24h_ago) / price_24h_ago * 100 if price_24h_ago > 0 else 0
+                    
+                    portfolio_items.append({
+                        "Актив": asset,
+                        "Количество": quantity,
+                        "Средняя цена покупки": avg_buy_price,
+                        "Текущая цена": current_price,
+                        "Текущая стоимость": current_value,
+                        "Изменение 24ч (%)": change_24h,
+                        "P&L": profit_loss,
+                        "P&L (%)": profit_loss_percent
+                    })
+            
+            # Отображение общей информации о портфеле
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Общая стоимость портфеля", f"${total_portfolio_value:,.2f}")
+            
+            with col2:
+                # Знак для P&L
+                if total_profit_loss >= 0:
+                    st.metric("Общий P&L", f"${total_profit_loss:,.2f}", delta=f"{total_profit_loss/total_portfolio_value*100:.2f}%")
+                else:
+                    st.metric("Общий P&L", f"-${abs(total_profit_loss):,.2f}", delta=f"{total_profit_loss/total_portfolio_value*100:.2f}%", delta_color="inverse")
+            
+            with col3:
+                # Получение общего изменения стоимости за 24 часа
+                portfolio_24h_ago = 0
+                for item in portfolio_items:
+                    asset = item["Актив"]
+                    quantity = item["Количество"]
+                    price_24h_ago = price_data[asset].iloc[-2] if asset in price_data.columns and len(price_data) > 1 else item["Текущая цена"]
+                    portfolio_24h_ago += quantity * price_24h_ago
+                
+                change_24h = (total_portfolio_value - portfolio_24h_ago) / portfolio_24h_ago * 100 if portfolio_24h_ago > 0 else 0
+                
+                st.metric("Изменение за 24ч", 
+                         f"${total_portfolio_value - portfolio_24h_ago:,.2f}", 
+                         delta=f"{change_24h:.2f}%",
+                         delta_color="normal" if change_24h >= 0 else "inverse")
+            
+            # Создание DataFrame из данных портфеля
+            portfolio_df = pd.DataFrame(portfolio_items)
+            
+            # Отображение таблицы активов
+            if not portfolio_df.empty:
+                # Сортировка по текущей стоимости (по убыванию)
+                portfolio_df = portfolio_df.sort_values("Текущая стоимость", ascending=False)
+                
+                # Форматирование значений для отображения
+                formatted_df = portfolio_df.copy()
+                formatted_df["Средняя цена покупки"] = formatted_df["Средняя цена покупки"].apply(lambda x: f"${x:,.2f}")
+                formatted_df["Текущая цена"] = formatted_df["Текущая цена"].apply(lambda x: f"${x:,.2f}")
+                formatted_df["Текущая стоимость"] = formatted_df["Текущая стоимость"].apply(lambda x: f"${x:,.2f}")
+                formatted_df["Изменение 24ч (%)"] = formatted_df["Изменение 24ч (%)"].apply(
+                    lambda x: f"+{x:.2f}%" if x > 0 else (f"{x:.2f}%" if x < 0 else "0.00%")
+                )
+                formatted_df["P&L"] = formatted_df["P&L"].apply(
+                    lambda x: f"${x:,.2f}" if x >= 0 else f"-${abs(x):,.2f}"
+                )
+                formatted_df["P&L (%)"] = formatted_df["P&L (%)"].apply(
+                    lambda x: f"+{x:.2f}%" if x > 0 else (f"{x:.2f}%" if x < 0 else "0.00%")
+                )
+                
+                # Отображение таблицы
+                st.dataframe(formatted_df, use_container_width=True)
+                
+                # График распределения активов по стоимости
+                st.subheader("Распределение портфеля")
+                fig = px.pie(
+                    portfolio_df,
+                    values="Текущая стоимость",
+                    names="Актив",
+                    title="Распределение портфеля по текущей стоимости"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+    
+    # Вкладка "Добавить транзакцию"
+    with tabs[1]:
+        st.subheader("Добавить новую транзакцию")
+        
+        # Форма для добавления транзакции
+        with st.form("add_transaction_form"):
+            # Выбор актива
+            asset = st.selectbox(
+                "Выберите актив",
+                options=assets
+            )
+            
+            # Тип операции
+            transaction_type = st.radio(
+                "Тип операции",
+                options=["buy", "sell"],
+                format_func=lambda x: "Покупка" if x == "buy" else "Продажа",
+                horizontal=True
+            )
+            
+            # Дата и время транзакции
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                transaction_date = st.date_input(
+                    "Дата транзакции",
+                    value=datetime.now()
+                )
+            
+            with col2:
+                transaction_time = st.time_input(
+                    "Время транзакции",
+                    value=datetime.now().time()
+                )
+            
+            # Объединение даты и времени
+            transaction_datetime = datetime.combine(transaction_date, transaction_time)
+            
+            # Количество и цена
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                quantity = st.number_input(
+                    "Количество",
+                    min_value=0.0,
+                    value=1.0,
+                    step=0.01
+                )
+            
+            with col2:
+                # Текущая цена актива
+                current_price = price_data[asset].iloc[-1] if asset in price_data.columns else 0
+                
+                price = st.number_input(
+                    "Цена за единицу",
+                    min_value=0.0,
+                    value=current_price,
+                    step=0.01
+                )
+            
+            # Комиссия и общая стоимость
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                fee = st.number_input(
+                    "Комиссия",
+                    min_value=0.0,
+                    value=0.0,
+                    step=0.01
+                )
+            
+            with col2:
+                total_cost = quantity * price + fee if transaction_type == "buy" else quantity * price - fee
+                st.metric("Общая стоимость", f"${total_cost:,.2f}")
+            
+            # Примечание к транзакции
+            note = st.text_area(
+                "Примечание",
+                placeholder="Добавьте описание или комментарий к транзакции"
+            )
+            
+            # Кнопка отправки формы
+            submit_button = st.form_submit_button("Добавить транзакцию")
+            
+            if submit_button:
+                # Проверка валидности данных
+                if quantity <= 0:
+                    st.error("Количество должно быть больше нуля")
+                elif price <= 0:
+                    st.error("Цена должна быть больше нуля")
+                else:
+                    # Создание данных транзакции
+                    transaction_data = {
+                        "asset": asset,
+                        "type": transaction_type,
+                        "quantity": quantity,
+                        "price": price,
+                        "fee": fee,
+                        "date": transaction_datetime.strftime("%Y-%m-%d %H:%M:%S"),
+                        "note": note
+                    }
+                    
+                    # Добавление транзакции
+                    success, message = add_transaction(username, transaction_data)
+                    
+                    if success:
+                        st.success(message)
+                        st.info("Обновите страницу, чтобы увидеть изменения в портфеле")
+                    else:
+                        st.error(message)
+    
+    # Вкладка "История транзакций"
+    with tabs[2]:
+        st.subheader("История транзакций")
+        
+        if not transactions:
+            st.info("У вас пока нет транзакций")
+        else:
+            # Создание DataFrame для отображения истории транзакций
+            transactions_df = pd.DataFrame(transactions)
+            
+            # Приведение столбца даты к datetime
+            transactions_df["date"] = pd.to_datetime(transactions_df["date"])
+            
+            # Сортировка по дате (новые сверху)
+            transactions_df = transactions_df.sort_values("date", ascending=False)
+            
+            # Форматирование данных для отображения
+            formatted_transactions = transactions_df.copy()
+            formatted_transactions["type"] = formatted_transactions["type"].apply(
+                lambda x: "Покупка" if x == "buy" else "Продажа"
+            )
+            formatted_transactions["quantity"] = formatted_transactions["quantity"].apply(
+                lambda x: f"{x:,.8f}"
+            )
+            formatted_transactions["price"] = formatted_transactions["price"].apply(
+                lambda x: f"${x:,.2f}"
+            )
+            formatted_transactions["fee"] = formatted_transactions["fee"].apply(
+                lambda x: f"${x:,.2f}"
+            )
+            
+            # Расчет общей стоимости транзакции
+            formatted_transactions["total"] = [
+                f"${row['quantity'] * row['price'] + row['fee']:,.2f}" if row["type"] == "buy" 
+                else f"${row['quantity'] * row['price'] - row['fee']:,.2f}"
+                for _, row in transactions_df.iterrows()
+            ]
+            
+            # Переименование столбцов для отображения
+            display_columns = {
+                "id": "ID",
+                "date": "Дата",
+                "type": "Тип",
+                "asset": "Актив",
+                "quantity": "Количество",
+                "price": "Цена",
+                "fee": "Комиссия",
+                "total": "Общая стоимость",
+                "note": "Примечание"
+            }
+            
+            formatted_transactions = formatted_transactions.rename(columns=display_columns)
+            
+            # Отображение таблицы транзакций
+            st.dataframe(formatted_transactions[list(display_columns.values())], use_container_width=True)
+            
+            # Фильтр транзакций
+            st.subheader("Фильтр транзакций")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Фильтр по типу транзакции
+                transaction_type_filter = st.multiselect(
+                    "Тип транзакции",
+                    options=["Покупка", "Продажа"],
+                    default=["Покупка", "Продажа"]
+                )
+            
+            with col2:
+                # Фильтр по активу
+                available_assets = transactions_df["asset"].unique().tolist()
+                asset_filter = st.multiselect(
+                    "Активы",
+                    options=available_assets,
+                    default=available_assets
+                )
+            
+            # Применение фильтров
+            filtered_transactions = formatted_transactions.copy()
+            
+            if transaction_type_filter:
+                filtered_transactions = filtered_transactions[filtered_transactions["Тип"].isin(transaction_type_filter)]
+            
+            if asset_filter:
+                filtered_transactions = filtered_transactions[filtered_transactions["Актив"].isin(asset_filter)]
+            
+            # Отображение отфильтрованных транзакций
+            if not filtered_transactions.empty:
+                st.subheader("Отфильтрованные транзакции")
+                st.dataframe(filtered_transactions, use_container_width=True)
+                
+                # Удаление транзакции
+                st.subheader("Удаление транзакции")
+                
+                transaction_to_delete = st.number_input(
+                    "Введите ID транзакции для удаления",
+                    min_value=1,
+                    max_value=max(transactions_df["id"]) if not transactions_df.empty else 1,
+                    step=1
+                )
+                
+                if st.button("Удалить транзакцию"):
+                    # Проверка существования транзакции
+                    transaction_exists = any(t["id"] == transaction_to_delete for t in transactions)
+                    
+                    if transaction_exists:
+                        # Подтверждение удаления
+                        if st.checkbox(f"Я подтверждаю удаление транзакции №{transaction_to_delete}"):
+                            success, message = delete_transaction(username, transaction_to_delete)
+                            
+                            if success:
+                                st.success(message)
+                                st.info("Обновите страницу, чтобы увидеть изменения")
+                            else:
+                                st.error(message)
+                    else:
+                        st.error(f"Транзакция с ID {transaction_to_delete} не найдена") 
