@@ -17,7 +17,7 @@ from portfolios_optimization.visualization import plot_portfolio_performance, pl
 from portfolios_optimization.model_trainer import train_model, load_trained_model
 from portfolios_optimization.authentication import (
     initialize_users_file, register_user, authenticate_user, get_user_info,
-    update_user_portfolio, get_user_portfolios, get_user_portfolio
+    update_user_portfolio, get_user_portfolios, get_user_portfolio, get_portfolio_with_quantities
 )
 
 # Импорт страниц приложения
@@ -173,239 +173,126 @@ else:
             
             st.subheader("Ваши портфели")
             
-            # Получение списка портфелей пользователя
-            portfolios = get_user_portfolios(st.session_state.username)
+            # Получение данных о транзакционном портфеле пользователя
+            portfolio_data = get_portfolio_with_quantities(st.session_state.username)
             
-            if portfolios:
-                # Отображение существующих портфелей
-                tab1, tab2 = st.tabs(["Мои портфели", "Создать новый портфель"])
+            # Проверка наличия активов в портфеле
+            has_assets = portfolio_data and any(portfolio_data["quantities"].values())
+            
+            if has_assets:
+                # Создание DataFrame для отображения портфеля
+                portfolio_items = []
                 
-                with tab1:
-                    # Выбор портфеля для просмотра
-                    selected_portfolio = st.selectbox(
-                        "Выберите портфель",
-                        options=portfolios
-                    )
-                    
-                    # Загрузка данных выбранного портфеля
-                    portfolio_data = get_user_portfolio(st.session_state.username, selected_portfolio)
-                    
-                    if portfolio_data:
-                        st.write(f"**Название:** {selected_portfolio}")
-                        st.write(f"**Описание:** {portfolio_data.get('description', 'Нет описания')}")
-                        st.write(f"**Тип:** {portfolio_data.get('type', 'Пользовательский')}")
-                        st.write(f"**Последнее обновление:** {portfolio_data.get('last_updated', 'Неизвестно')}")
+                total_portfolio_value = 0
+                total_profit_loss = 0
+                
+                for asset, quantity in portfolio_data["quantities"].items():
+                    if quantity > 0:
+                        # Получение текущей цены актива
+                        current_price = price_data[asset].iloc[-1] if asset in price_data.columns else 0
                         
-                        # Отображение активов портфеля
-                        if "assets" in portfolio_data:
-                            # Создаем DataFrame для отображения
-                            portfolio_df = pd.DataFrame({
-                                'Актив': list(portfolio_data['assets'].keys()),
-                                'Вес': list(portfolio_data['assets'].values())
-                            })
-                            
-                            # График распределения активов
-                            fig = px.pie(
-                                portfolio_df,
-                                values='Вес',
-                                names='Актив',
-                                title=f"Распределение активов портфеля {selected_portfolio}"
-                            )
-                            st.plotly_chart(fig)
-                            
-                            # Таблица с активами
-                            st.table(portfolio_df)
-                            
-                            # Анализ портфеля
-                            st.subheader("Анализ портфеля")
-                            
-                            # Если доступны данные цен активов
-                            if not price_data.empty:
-                                # Фильтрация данных для активов портфеля
-                                portfolio_assets = list(portfolio_data['assets'].keys())
-                                if all(asset in price_data.columns for asset in portfolio_assets):
-                                    # Получение данных цен
-                                    asset_data = price_data[portfolio_assets]
-                                    
-                                    # Расчет доходностей
-                                    returns = asset_data.pct_change().dropna()
-                                    
-                                    # Веса активов
-                                    weights = np.array(list(portfolio_data['assets'].values()))
-                                    
-                                    # Расчет доходности портфеля
-                                    portfolio_returns = np.matmul(returns, weights)
-                                    portfolio_returns_series = pd.Series(portfolio_returns, index=returns.index)
-                                    
-                                    # График накопленной доходности
-                                    cum_returns = portfolio_returns_series.cumsum()
-                                    
-                                    fig = px.line(
-                                        cum_returns, 
-                                        title="Накопленная доходность портфеля",
-                                        labels={"value": "Доходность", "index": "Дата"}
-                                    )
-                                    st.plotly_chart(fig)
-                                    
-                                    # Метрики портфеля
-                                    total_return = cum_returns.iloc[-1]
-                                    annual_return = (1 + total_return) ** (252 / len(cum_returns)) - 1
-                                    volatility = portfolio_returns_series.std() * np.sqrt(252)
-                                    sharpe_ratio = annual_return / volatility
-                                    
-                                    col1, col2, col3 = st.columns(3)
-                                    col1.metric("Общая доходность", f"{total_return*100:.2f}%")
-                                    col2.metric("Годовая доходность", f"{annual_return*100:.2f}%")
-                                    col3.metric("Коэффициент Шарпа", f"{sharpe_ratio:.2f}")
-                                else:
-                                    st.warning("Некоторые активы портфеля отсутствуют в данных цен")
-                            else:
-                                st.warning("Данные цен активов недоступны")
+                        # Средняя цена покупки
+                        avg_buy_price = portfolio_data["avg_prices"].get(asset, 0)
+                        
+                        # Расчет текущей стоимости и прибыли/убытка
+                        current_value = quantity * current_price
+                        invested_value = quantity * avg_buy_price
+                        profit_loss = current_value - invested_value
+                        profit_loss_percent = (profit_loss / invested_value * 100) if invested_value > 0 else 0
+                        
+                        total_portfolio_value += current_value
+                        total_profit_loss += profit_loss
+                        
+                        portfolio_items.append({
+                            "Актив": asset,
+                            "Количество": quantity,
+                            "Средняя цена покупки": avg_buy_price,
+                            "Текущая цена": current_price,
+                            "Текущая стоимость": current_value,
+                            "P&L": profit_loss,
+                            "P&L (%)": profit_loss_percent
+                        })
+                
+                # Отображение общей информации о портфеле
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Общая стоимость портфеля", f"${total_portfolio_value:,.2f}")
+                
+                with col2:
+                    # Знак для P&L
+                    if total_profit_loss >= 0:
+                        st.metric("Общий P&L", f"${total_profit_loss:,.2f}", delta=f"{total_profit_loss/total_portfolio_value*100:.2f}%")
                     else:
-                        st.error("Не удалось загрузить данные портфеля")
+                        st.metric("Общий P&L", f"-${abs(total_profit_loss):,.2f}", delta=f"{total_profit_loss/total_portfolio_value*100:.2f}%", delta_color="inverse")
                 
-                with tab2:
-                    # Форма создания нового портфеля
-                    st.subheader("Создать новый портфель")
+                with col3:
+                    # Получение общего изменения стоимости за 24 часа
+                    portfolio_24h_ago = 0
+                    for item in portfolio_items:
+                        asset = item["Актив"]
+                        quantity = item["Количество"]
+                        price_24h_ago = price_data[asset].iloc[-2] if asset in price_data.columns and len(price_data) > 1 else item["Текущая цена"]
+                        portfolio_24h_ago += quantity * price_24h_ago
                     
-                    with st.form("new_portfolio_form"):
-                        portfolio_name = st.text_input("Название портфеля")
-                        portfolio_description = st.text_area("Описание портфеля")
-                        
-                        # Выбор активов
-                        selected_assets = st.multiselect(
-                            "Выберите активы",
-                            options=assets,
-                            default=assets[:5] if len(assets) >= 5 else assets
-                        )
-                        
-                        # Динамическое создание слайдеров для весов активов
-                        asset_weights = {}
-                        
-                        if selected_assets:
-                            # Равномерное начальное распределение
-                            initial_weight = 1.0 / len(selected_assets)
-                            
-                            for asset in selected_assets:
-                                weight = st.slider(
-                                    f"Вес {asset}",
-                                    min_value=0.0,
-                                    max_value=1.0,
-                                    value=initial_weight,
-                                    step=0.01,
-                                    key=f"weight_{asset}"
-                                )
-                                asset_weights[asset] = weight
-                            
-                            # Проверка суммы весов
-                            total_weight = sum(asset_weights.values())
-                            st.write(f"Общая сумма весов: {total_weight:.2f}")
-                            
-                            if abs(total_weight - 1.0) > 0.01:
-                                st.warning("Сумма весов должна быть равна 1.0")
-                        
-                        submit_button = st.form_submit_button("Создать портфель")
-                        
-                        if submit_button:
-                            if not portfolio_name:
-                                st.error("Необходимо указать название портфеля")
-                            elif not selected_assets:
-                                st.error("Необходимо выбрать хотя бы один актив")
-                            elif abs(total_weight - 1.0) > 0.01:
-                                st.error("Сумма весов должна быть равна 1.0")
-                            else:
-                                # Создание данных портфеля
-                                portfolio_data = {
-                                    "description": portfolio_description,
-                                    "type": "custom",
-                                    "assets": asset_weights,
-                                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                    "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                }
-                                
-                                # Сохранение портфеля
-                                success, message = update_user_portfolio(
-                                    st.session_state.username, 
-                                    portfolio_name, 
-                                    portfolio_data
-                                )
-                                
-                                if success:
-                                    st.success(message)
-                                    st.info("Обновите страницу, чтобы увидеть новый портфель")
-                                else:
-                                    st.error(message)
-            else:
-                st.info("У вас еще нет портфелей. Создайте свой первый портфель!")
+                    change_24h = (total_portfolio_value - portfolio_24h_ago) / portfolio_24h_ago * 100 if portfolio_24h_ago > 0 else 0
+                    
+                    st.metric("Изменение за 24ч", 
+                             f"${total_portfolio_value - portfolio_24h_ago:,.2f}", 
+                             delta=f"{change_24h:.2f}%",
+                             delta_color="normal" if change_24h >= 0 else "inverse")
                 
-                # Форма создания нового портфеля
-                with st.form("first_portfolio_form"):
-                    portfolio_name = st.text_input("Название портфеля")
-                    portfolio_description = st.text_area("Описание портфеля")
+                # Создание DataFrame из данных портфеля
+                portfolio_df = pd.DataFrame(portfolio_items)
+                
+                # Отображение таблицы активов
+                if not portfolio_df.empty:
+                    # Сортировка по текущей стоимости (по убыванию)
+                    portfolio_df = portfolio_df.sort_values("Текущая стоимость", ascending=False)
                     
-                    # Выбор активов
-                    selected_assets = st.multiselect(
-                        "Выберите активы",
-                        options=assets,
-                        default=assets[:5] if len(assets) >= 5 else assets
+                    # Форматирование значений для отображения
+                    formatted_df = portfolio_df.copy()
+                    formatted_df["Количество"] = formatted_df["Количество"].apply(lambda x: f"{x:,.8f}")
+                    formatted_df["Средняя цена покупки"] = formatted_df["Средняя цена покупки"].apply(lambda x: f"${x:,.2f}")
+                    formatted_df["Текущая цена"] = formatted_df["Текущая цена"].apply(lambda x: f"${x:,.2f}")
+                    formatted_df["Текущая стоимость"] = formatted_df["Текущая стоимость"].apply(lambda x: f"${x:,.2f}")
+                    formatted_df["P&L"] = formatted_df["P&L"].apply(
+                        lambda x: f"${x:,.2f}" if x >= 0 else f"-${abs(x):,.2f}"
+                    )
+                    formatted_df["P&L (%)"] = formatted_df["P&L (%)"].apply(
+                        lambda x: f"+{x:.2f}%" if x > 0 else (f"{x:.2f}%" if x < 0 else "0.00%")
                     )
                     
-                    # Динамическое создание слайдеров для весов активов
-                    asset_weights = {}
+                    # Отображение таблицы
+                    st.dataframe(formatted_df, use_container_width=True)
                     
-                    if selected_assets:
-                        # Равномерное начальное распределение
-                        initial_weight = 1.0 / len(selected_assets)
-                        
-                        for asset in selected_assets:
-                            weight = st.slider(
-                                f"Вес {asset}",
-                                min_value=0.0,
-                                max_value=1.0,
-                                value=initial_weight,
-                                step=0.01,
-                                key=f"weight_{asset}"
-                            )
-                            asset_weights[asset] = weight
-                        
-                        # Проверка суммы весов
-                        total_weight = sum(asset_weights.values())
-                        st.write(f"Общая сумма весов: {total_weight:.2f}")
-                        
-                        if abs(total_weight - 1.0) > 0.01:
-                            st.warning("Сумма весов должна быть равна 1.0")
+                    # График распределения активов по стоимости
+                    st.subheader("Распределение портфеля")
+                    fig = px.pie(
+                        portfolio_df,
+                        values="Текущая стоимость",
+                        names="Актив",
+                        title="Распределение портфеля по текущей стоимости"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
                     
-                    submit_button = st.form_submit_button("Создать портфель")
-                    
-                    if submit_button:
-                        if not portfolio_name:
-                            st.error("Необходимо указать название портфеля")
-                        elif not selected_assets:
-                            st.error("Необходимо выбрать хотя бы один актив")
-                        elif abs(total_weight - 1.0) > 0.01:
-                            st.error("Сумма весов должна быть равна 1.0")
-                        else:
-                            # Создание данных портфеля
-                            portfolio_data = {
-                                "description": portfolio_description,
-                                "type": "custom",
-                                "assets": asset_weights,
-                                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            }
-                            
-                            # Сохранение портфеля
-                            success, message = update_user_portfolio(
-                                st.session_state.username, 
-                                portfolio_name, 
-                                portfolio_data
-                            )
-                            
-                            if success:
-                                st.success(message)
-                                st.info("Обновите страницу, чтобы увидеть свой портфель")
-                            else:
-                                st.error(message)
+                    st.info("Чтобы изменить состав портфеля, добавьте или удалите активы через раздел 'Управление активами'.")
+            else:
+                st.info("""
+                У вас пока нет активов в портфеле.
+                
+                Чтобы сформировать портфель:
+                1. Перейдите в раздел 'Управление активами'
+                2. На вкладке 'Добавить транзакцию' добавьте свои первые активы
+                3. После добавления транзакций, портфель сформируется автоматически
+                
+                Ваш портфель будет отображаться здесь и в разделе 'Единый торговый аккаунт'.
+                """)
+                
+                # Кнопка перехода к разделу "Управление активами"
+                if st.button("Перейти к управлению активами"):
+                    st.session_state.active_page = "Управление активами"
+                    st.rerun()
         else:
             st.error("Не удалось загрузить информацию о пользователе")
     
@@ -419,19 +306,19 @@ else:
     
     # Подключение страниц из app_pages.py
     elif page == "Dashboard":
-        render_dashboard(price_data, model_returns, model_actions, assets)
+        render_dashboard(st.session_state.username, price_data, model_returns, model_actions, assets)
     
     elif page == "Portfolio Optimization":
-        render_portfolio_optimization(price_data, assets)
+        render_portfolio_optimization(st.session_state.username, price_data, assets)
     
     elif page == "Model Training":
-        render_model_training(price_data, assets)
+        render_model_training(st.session_state.username, price_data, assets)
     
     elif page == "Model Comparison":
-        render_model_comparison(model_returns, model_actions)
+        render_model_comparison(st.session_state.username, model_returns, model_actions, price_data)
     
     elif page == "Backtest Results":
-        render_backtest(model_returns)
+        render_backtest(st.session_state.username, model_returns, price_data)
     
     elif page == "About":
         render_about() 
