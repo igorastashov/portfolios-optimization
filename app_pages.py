@@ -1679,90 +1679,196 @@ def render_transactions_manager(username, price_data, assets):
     # Вкладка "Добавить транзакцию"
     with tabs[1]:
         st.subheader("Добавить новую транзакцию")
-        
-        # Форма для добавления транзакции
-        with st.form("add_transaction_form"):
-            # Выбор актива
-            asset = st.selectbox(
-                "Выберите актив",
-                options=assets
-            )
+
+        # Инициализация флага сброса формы
+        if 'transaction_submitted_successfully' not in st.session_state: st.session_state.transaction_submitted_successfully = False
+
+        # Проверка и выполнение сброса, если флаг установлен
+        if st.session_state.transaction_submitted_successfully:
+            st.session_state.transaction_quantity = 1.0
+            st.session_state.transaction_price = 0.0 # Будет обновлено до текущей цены при инициализации
+            st.session_state.transaction_volume_usdt = 0.0
+            st.session_state.transaction_fee = 0.0
+            st.session_state.transaction_total_cost = 0.0
+            st.session_state.transaction_note = "" # Также сбрасываем примечание
+            st.session_state.last_changed = None
+            # st.session_state.transaction_asset = assets[0] if assets else None # Не сбрасываем актив и тип
+            # st.session_state.transaction_type = "buy"
+            st.session_state.transaction_submitted_successfully = False # Сбрасываем сам флаг
+
+        # Инициализация состояния для полей ввода, если они еще не существуют (или после сброса)
+        if 'transaction_asset' not in st.session_state: st.session_state.transaction_asset = assets[0] if assets else None
+        if 'transaction_type' not in st.session_state: st.session_state.transaction_type = "buy"
+        if 'transaction_quantity' not in st.session_state: st.session_state.transaction_quantity = 1.0
+        if 'transaction_price' not in st.session_state: st.session_state.transaction_price = 0.0
+        if 'transaction_volume_usdt' not in st.session_state: st.session_state.transaction_volume_usdt = 0.0
+        if 'transaction_fee' not in st.session_state: st.session_state.transaction_fee = 0.0
+        if 'transaction_total_cost' not in st.session_state: st.session_state.transaction_total_cost = 0.0
+        if 'current_asset_price' not in st.session_state: st.session_state.current_asset_price = 0.0
+        if 'last_changed' not in st.session_state: st.session_state.last_changed = None 
+        if 'transaction_note' not in st.session_state: st.session_state.transaction_note = "" # Инициализация состояния для примечания
+
+        # --- Функции обратного вызова для динамического обновления --- 
+        def update_calculations(changed_field):
+            st.session_state.last_changed = changed_field
+            price = st.session_state.transaction_price
+            quantity = st.session_state.transaction_quantity
+            volume = st.session_state.transaction_volume_usdt
+            fee = st.session_state.transaction_fee
+            type = st.session_state.transaction_type
+
+            if changed_field == 'asset' or changed_field == 'init':
+                asset = st.session_state.transaction_asset
+                current_price = price_data[asset].iloc[-1] if asset and asset in price_data.columns else 0
+                st.session_state.current_asset_price = current_price
+                # Если цена не была установлена вручную, обновляем ее до текущей
+                if st.session_state.transaction_price == 0.0 or st.session_state.last_changed == 'asset': 
+                    st.session_state.transaction_price = current_price
+                    price = current_price
+                # Пересчитываем все на основе новой цены/актива
+                if st.session_state.last_changed == 'quantity': # Если количество было введено последним
+                    st.session_state.transaction_volume_usdt = quantity * price
+                elif st.session_state.last_changed == 'volume': # Если объем был введен последним
+                    st.session_state.transaction_quantity = volume / price if price > 0 else 0
+                else: # По умолчанию считаем объем от количества
+                    st.session_state.transaction_volume_usdt = quantity * price
+
+            elif changed_field == 'quantity':
+                st.session_state.transaction_volume_usdt = quantity * price
+
+            elif changed_field == 'price':
+                # Пересчитываем в зависимости от того, что было введено последним
+                if st.session_state.last_changed == 'quantity' or st.session_state.last_changed is None:
+                    st.session_state.transaction_volume_usdt = quantity * price
+                elif st.session_state.last_changed == 'volume':
+                    st.session_state.transaction_quantity = volume / price if price > 0 else 0
+                else: # По умолчанию обновляем объем
+                     st.session_state.transaction_volume_usdt = quantity * price
+
+            elif changed_field == 'volume':
+                st.session_state.transaction_quantity = volume / price if price > 0 else 0
             
-            # Тип операции
-            transaction_type = st.radio(
+            # Обновляем итоговую стоимость после всех пересчетов
+            quantity = st.session_state.transaction_quantity # Перечитываем на случай изменения
+            price = st.session_state.transaction_price      # Перечитываем на случай изменения
+            fee = st.session_state.transaction_fee
+            type = st.session_state.transaction_type
+            st.session_state.transaction_total_cost = quantity * price + fee if type == "buy" else quantity * price - fee
+        
+        # Инициализация при первой загрузке или смене актива
+        if st.session_state.transaction_asset and st.session_state.transaction_price == 0.0:
+             update_calculations('init')
+
+        # --- Виджеты вне формы для динамического обновления --- 
+        col1, col2 = st.columns(2)
+        with col1:
+            st.selectbox(
+                "Выберите актив",
+                options=assets,
+                key='transaction_asset',
+                on_change=update_calculations, 
+                args=('asset',)
+            )
+        with col2:
+            st.radio(
                 "Тип операции",
                 options=["buy", "sell"],
                 format_func=lambda x: "Покупка" if x == "buy" else "Продажа",
-                horizontal=True
+                key='transaction_type',
+                horizontal=True,
+                on_change=update_calculations, 
+                args=('type',)
             )
-            
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.number_input(
+                "Количество",
+                min_value=0.0,
+                key='transaction_quantity',
+                step=0.000001,
+                format="%.8f",
+                on_change=update_calculations, 
+                args=('quantity',)
+            )
+        with col2:
+             st.number_input(
+                f"Цена за единицу (Текущая: ${st.session_state.current_asset_price:,.4f})",
+                min_value=0.0,
+                key='transaction_price',
+                step=0.01,
+                format="%.4f",
+                on_change=update_calculations, 
+                args=('price',)
+            )
+        with col3:
+             st.number_input(
+                "Объем ордера (USDT)",
+                min_value=0.0,
+                key='transaction_volume_usdt',
+                step=1.0,
+                format="%.2f",
+                on_change=update_calculations, 
+                args=('volume',)
+            )
+
+        col1, col2 = st.columns([1, 2]) # Колонка для комиссии и итоговой стоимости
+        with col1:
+             st.number_input(
+                "Комиссия (USDT)",
+                min_value=0.0,
+                key='transaction_fee',
+                step=0.01,
+                format="%.2f",
+                on_change=update_calculations, 
+                args=('fee',)
+            )
+        with col2:
+             # Отображение динамически обновляемой общей стоимости
+            st.metric("Рассчитанная общая стоимость", f"${st.session_state.transaction_total_cost:,.2f}")
+
+
+        # --- Форма для ввода даты, времени, примечания и кнопки --- 
+        with st.form("add_transaction_form_details"):
+            st.write("**Детали транзакции:**")
             # Дата и время транзакции
             col1, col2 = st.columns(2)
-            
             with col1:
                 transaction_date = st.date_input(
                     "Дата транзакции",
-                    value=datetime.now()
+                    value=datetime.now().date()
                 )
-            
             with col2:
                 transaction_time = st.time_input(
                     "Время транзакции",
                     value=datetime.now().time()
                 )
             
-            # Объединение даты и времени
-            transaction_datetime = datetime.combine(transaction_date, transaction_time)
-            
-            # Количество и цена
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                quantity = st.number_input(
-                    "Количество",
-                    min_value=0.0,
-                    value=1.0,
-                    step=0.01
-                )
-            
-            with col2:
-                # Текущая цена актива
-                current_price = price_data[asset].iloc[-1] if asset in price_data.columns else 0
-                
-                price = st.number_input(
-                    "Цена за единицу",
-                    min_value=0.0,
-                    value=current_price,
-                    step=0.01
-                )
-            
-            # Комиссия и общая стоимость
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                fee = st.number_input(
-                    "Комиссия",
-                    min_value=0.0,
-                    value=0.0,
-                    step=0.01
-                )
-            
-            with col2:
-                total_cost = quantity * price + fee if transaction_type == "buy" else quantity * price - fee
-                st.metric("Общая стоимость", f"${total_cost:,.2f}")
-            
             # Примечание к транзакции
             note = st.text_area(
                 "Примечание",
-                placeholder="Добавьте описание или комментарий к транзакции"
+                placeholder="Добавьте описание или комментарий к транзакции",
+                key='transaction_note' # Добавляем ключ для сохранения состояния при ошибках валидации
             )
             
             # Кнопка отправки формы
             submit_button = st.form_submit_button("Добавить транзакцию")
             
             if submit_button:
+                # Получаем значения из session_state
+                asset = st.session_state.transaction_asset
+                transaction_type = st.session_state.transaction_type
+                quantity = st.session_state.transaction_quantity
+                price = st.session_state.transaction_price
+                fee = st.session_state.transaction_fee
+
+                # Объединение даты и времени
+                transaction_datetime = datetime.combine(transaction_date, transaction_time)
+
                 # Проверка валидности данных
-                if quantity <= 0:
+                if not asset:
+                     st.error("Пожалуйста, выберите актив.")
+                elif quantity <= 0:
                     st.error("Количество должно быть больше нуля")
                 elif price <= 0:
                     st.error("Цена должна быть больше нуля")
@@ -1783,7 +1889,10 @@ def render_transactions_manager(username, price_data, assets):
                     
                     if success:
                         st.success(message)
-                        st.info("Обновите страницу, чтобы увидеть изменения в портфеле")
+                        # Устанавливаем флаг для сброса формы при следующем rerun
+                        st.session_state.transaction_submitted_successfully = True
+                        # Убираем прямой сброс состояния отсюда
+                        st.rerun() # Перезагрузить чтобы очистить поля и обновить историю
                     else:
                         st.error(message)
     
