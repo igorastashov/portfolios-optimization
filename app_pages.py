@@ -10,13 +10,94 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 
 from portfolios_optimization.portfolio_optimizer import optimize_markowitz_portfolio
-from portfolios_optimization.portfolio_analysis import calculate_metrics, plot_efficient_frontier
+from portfolios_optimization.portfolio_analysis import calculate_metrics, plot_efficient_frontier, calculate_drawdown
 from portfolios_optimization.visualization import plot_portfolio_performance, plot_asset_allocation
 from portfolios_optimization.model_trainer import train_model, load_trained_model
 from portfolios_optimization.authentication import (
     get_user_portfolios, get_user_portfolio, get_user_transactions, 
     add_transaction, delete_transaction, get_portfolio_with_quantities, update_user_portfolio
 )
+
+# Новая функция для расчета истории стоимости портфеля
+def calculate_portfolio_value_history(username, price_data, start_date, end_date):
+    """
+    Рассчитывает ежедневную историю общей стоимости портфеля пользователя.
+
+    Args:
+        username (str): Имя пользователя.
+        price_data (pd.DataFrame): DataFrame с историческими ценами активов (индекс - дата).
+        start_date (datetime): Начальная дата для расчета истории.
+        end_date (datetime): Конечная дата для расчета истории.
+
+    Returns:
+        pd.DataFrame: DataFrame с колонками 'Дата' и 'Стоимость портфеля'.
+                      Возвращает пустой DataFrame, если нет данных.
+    """
+    transactions = get_user_transactions(username)
+    if not transactions:
+        return pd.DataFrame(columns=['Дата', 'Стоимость портфеля'])
+
+    transactions_df = pd.DataFrame(transactions)
+    transactions_df['date'] = pd.to_datetime(transactions_df['date']).dt.tz_localize(None) # Убираем таймзону для сравнения
+    transactions_df['quantity'] = pd.to_numeric(transactions_df['quantity'])
+    transactions_df['price'] = pd.to_numeric(transactions_df['price'])
+    transactions_df.sort_values('date', inplace=True)
+
+    # Убедимся, что даты в price_data тоже без таймзоны или приведены к единому формату
+    if price_data.index.tz is not None:
+         price_data.index = price_data.index.tz_localize(None)
+
+    # Нормализуем start_date и end_date до начала дня и конца дня соответственно, без таймзоны
+    start_date_norm = pd.Timestamp(start_date).normalize()
+    end_date_norm = pd.Timestamp(end_date).normalize()
+
+    # Создаем полный диапазон дат для расчета
+    date_range = pd.date_range(start=start_date_norm, end=end_date_norm, freq='D')
+    portfolio_history = []
+    current_quantities = {}
+
+    transactions_df = transactions_df[transactions_df['date'] <= end_date_norm] # Фильтруем транзакции до конечной даты
+
+    last_processed_transaction_idx = 0
+
+    for current_date in date_range:
+        # Обновляем количества на основе транзакций до *начала* текущего дня
+        # т.е. транзакции за current_date будут учтены только на следующий день
+        transactions_today = transactions_df[
+            (transactions_df['date'] > (current_date - timedelta(days=1))) &
+            (transactions_df['date'] <= current_date)
+        ]
+
+        for _, transaction in transactions_today.iterrows():
+             asset = transaction['asset']
+             quantity = transaction['quantity']
+             trans_type = transaction['type']
+
+             if trans_type == 'Покупка':
+                 current_quantities[asset] = current_quantities.get(asset, 0) + quantity
+             elif trans_type == 'Продажа':
+                 current_quantities[asset] = current_quantities.get(asset, 0) - quantity
+                 if current_quantities[asset] < 1e-9: # Погрешность для float
+                     del current_quantities[asset] # Удаляем актив, если его не осталось
+
+        # Расчет стоимости портфеля на конец дня current_date
+        day_value = 0
+        for asset, quantity in current_quantities.items():
+            if quantity > 0 and asset in price_data.columns:
+                try:
+                    # Ищем цену на текущую дату или последнюю доступную перед ней
+                    price_at_date = price_data.loc[:current_date, asset].ffill().iloc[-1]
+                    if pd.notna(price_at_date):
+                         day_value += quantity * price_at_date
+                except (KeyError, IndexError):
+                    # Если цены для актива нет или нет данных до этой даты, пропускаем
+                    pass
+        portfolio_history.append({'Дата': current_date, 'Стоимость портфеля': day_value})
+
+    history_df = pd.DataFrame(portfolio_history)
+    if not history_df.empty:
+        history_df['Дата'] = pd.to_datetime(history_df['Дата']) # Убедимся, что тип Дата
+    return history_df
 
 def render_dashboard(username, price_data, model_returns, model_actions, assets):
     """Отображение страницы Dashboard"""
@@ -1278,170 +1359,161 @@ def render_account_dashboard(username, price_data, assets):
     # Секция P&L статистики
     st.header("P&L Аккаунта")
     
-    # Выбор временного интервала
-    interval = st.radio(
-        "Выберите интервал:",
-        ["7d", "30d", "60d", "180d", "С момента покупки"],
+    # Получение всех транзакций пользователя для определения первой даты
+    transactions = get_user_transactions(username)
+    earliest_transaction_date = None
+    if transactions:
+        try:
+            earliest_transaction_date = min([pd.to_datetime(t["date"]) for t in transactions])
+        except (ValueError, TypeError):
+            st.warning("Не удалось определить дату первой транзакции из истории.")
+            earliest_transaction_date = datetime.now() - timedelta(days=180) # Фоллбэк
+    else:
+        st.info("Нет транзакций для расчета истории P&L.")
+        earliest_transaction_date = datetime.now() # Если транзакций нет, история пуста
+        # Можно здесь прервать дальнейший расчет P&L, если нужно
+        # return 
+
+    # Выбор временного интервала (убираем 'С момента покупки')
+    interval_options = {"7d": 7, "30d": 30, "60d": 60, "180d": 180}
+    interval_key = st.radio(
+        "Выберите интервал отображения (относительно сегодня):",
+        options=list(interval_options.keys()),
         horizontal=True,
-        index=4
+        index=3 # По умолчанию 180d
     )
+    days_to_display = interval_options[interval_key]
     
-    # Определение количества дней для выбранного интервала или использование данных с момента покупки
-    if interval == "С момента покупки":
-        # Используем данные с момента самой первой транзакции
-        transactions = get_user_transactions(username)
-        if transactions:
-            # Находим дату самой ранней транзакции
-            earliest_date = min([pd.to_datetime(t["date"]) for t in transactions])
-            days = (datetime.now() - earliest_date).days
-        else:
-            days = 30  # Значение по умолчанию, если нет транзакций
-    else:
-        days_map = {"7d": 7, "30d": 30, "60d": 60, "180d": 180}
-        days = days_map[interval]
+    # Определение дат для расчета и отображения
+    calculation_end_date = datetime.now()
+    calculation_start_date = earliest_transaction_date
+    display_end_date = calculation_end_date
+    display_start_date = display_end_date - timedelta(days=days_to_display)
     
-    # Генерация исторических данных P&L на основе исторических цен активов
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=days)
+    # Убираем корректировку display_start_date
+    # if display_start_date < calculation_start_date:
+    #     display_start_date = calculation_start_date
+    #     # days_to_display = (display_end_date - display_start_date).days # Корректируем кол-во дней
+
+    st.write(f"Отображается P&L с {display_start_date.strftime('%Y-%m-%d')} по {display_end_date.strftime('%Y-%m-%d')} ({interval_key})")
+    # Убираем вторую строку, чтобы не путать
+    # st.write(f"(Полный расчет ведется с {calculation_start_date.strftime('%Y-%m-%d')})")
+
+    # \-- ЗАГЛУШКА: Здесь должен быть вызов функции для расчета ПОЛНОЙ истории P&L --/
+    # \-- Эта функция должна вернуть DataFrame с колонками: 'Дата', 'Стоимость портфеля', 'Суммарный P&L' --/
+    # \-- Расчитанный с calculation_start_date по calculation_end_date --/
+    # Пример: full_pnl_history_df = calculate_full_historical_pnl(username, price_data, calculation_start_date, calculation_end_date)
     
-    # Попытка использовать исторические данные цен для расчета P&L
-    if not price_data.empty and len(price_data) > 1:
-        # Фильтрация данных по дате
-        historical_data = price_data[price_data.index >= pd.Timestamp(start_date)]
+    # --- Временное решение: Используем текущий упрощенный расчет, --- 
+    # --- но фильтруем его потом по display_start_date --- 
+    pnl_data = pd.DataFrame() # Инициализируем пустой DataFrame
+    portfolio_values_display = [] # Для расчета метрик
+
+    if not price_data.empty and len(price_data) > 1 and transactions: # Добавляем проверку на наличие транзакций
+        # Фильтруем цены для ПОЛНОГО периода расчета
+        historical_prices = price_data[(price_data.index >= pd.Timestamp(calculation_start_date)) & (price_data.index <= pd.Timestamp(calculation_end_date))]
         
-        # Создание DataFrame для хранения ежедневного P&L
-        date_range = historical_data.index
-        daily_pnl_values = []
-        
-        # Расчет стоимости портфеля для каждого дня
-        portfolio_values = []
-        
-        # Стоимость всех активов по средней цене покупки (для расчета общего P&L)
-        total_cost_basis = 0
-        for asset, quantity in portfolio_data["quantities"].items():
-            if quantity > 0:
-                avg_price = portfolio_data["avg_prices"].get(asset, 0)
-                total_cost_basis += quantity * avg_price
-        
-        for date in date_range:
-            value_at_date = 0
-            for asset, quantity in portfolio_data["quantities"].items():
-                if quantity > 0 and asset in price_data.columns:
-                    try:
-                        price_at_date = price_data.loc[date, asset]
-                        value_at_date += quantity * price_at_date
-                    except:
-                        pass  # Пропускаем, если нет данных цен для этой даты
+        if not historical_prices.empty:
+            date_range_full = historical_prices.index
+            daily_pnl_values_full = []
+            portfolio_values_full = []
             
-            portfolio_values.append(value_at_date)
-        
-        # Расчет ежедневного P&L
-        for i in range(1, len(portfolio_values)):
-            daily_pnl = portfolio_values[i] - portfolio_values[i-1]
-            daily_pnl_values.append(daily_pnl)
-        
-        # Добавление нуля для первого дня, так как нет предыдущего значения
-        daily_pnl_values.insert(0, 0)
-        
-        # Создание DataFrame с данными P&L
-        pnl_data = pd.DataFrame({
-            'Дата': date_range,
-            'Стоимость портфеля': portfolio_values,
-            'Суточный P&L': daily_pnl_values
-        })
-        
-        # Расчет накопленного P&L
-        pnl_data['Суммарный P&L'] = np.cumsum(pnl_data['Суточный P&L'])
-        
-        # Расчет P&L относительно средней цены покупки
-        if interval == "С момента покупки":
-            # Для режима "С момента покупки" показываем реальный P&L относительно средней цены покупки
-            initial_value = total_cost_basis
-            total_pnl_from_cost = portfolio_values[-1] - total_cost_basis  # P&L от средней цены
+            # Расчет стоимости портфеля (УПРОЩЕННЫЙ: на основе текущих количеств!) на каждый день ПОЛНОГО периода
+            for date in date_range_full:
+                value_at_date = 0
+                for asset, quantity in portfolio_data["quantities"].items():
+                    if quantity > 0 and asset in price_data.columns:
+                        try:
+                            price_at_date = price_data.loc[date, asset]
+                            value_at_date += quantity * price_at_date
+                        except KeyError: # Обработка отсутствия цены на конкретную дату
+                            # Можно использовать последнюю известную цену или 0
+                            # Для простоты пока пропустим
+                             pass 
+                portfolio_values_full.append(value_at_date)
             
-            # Заменяем последнее значение суммарного P&L на P&L от средней цены
-            pnl_data.loc[pnl_data.index[-1], 'Суммарный P&L'] = total_pnl_from_cost
+            # Расчет ежедневного P&L для ПОЛНОГО периода
+            if portfolio_values_full:
+                start_value = portfolio_values_full[0]
+                daily_pnl_values_full = [0] + [portfolio_values_full[i] - portfolio_values_full[i-1] for i in range(1, len(portfolio_values_full))]
+                cumulative_pnl_full = np.cumsum(daily_pnl_values_full)
+                
+                # Расчет процентного P&L (относительно НАЧАЛА полного периода)
+                cumulative_pnl_pct_full = (cumulative_pnl_full / start_value * 100) if start_value > 0 else np.zeros_like(cumulative_pnl_full)
+
+                # Создание DataFrame с ПОЛНЫМИ данными P&L
+                full_pnl_history_df = pd.DataFrame({
+                    'Дата': date_range_full,
+                    'Стоимость портфеля': portfolio_values_full,
+                    'Суточный P&L': daily_pnl_values_full,
+                    'Суммарный P&L': cumulative_pnl_full,
+                    'Суммарный P&L (%)': cumulative_pnl_pct_full
+                })
+
+                # --- Фильтрация DataFrame для ОТОБРАЖЕНИЯ --- 
+                pnl_data = full_pnl_history_df[(full_pnl_history_df['Дата'] >= pd.Timestamp(display_start_date)) & (full_pnl_history_df['Дата'] <= pd.Timestamp(display_end_date))].copy()
+                
+                # Сохраняем значения для расчета метрик отображаемого периода
+                if not pnl_data.empty:
+                    portfolio_values_display = pnl_data['Стоимость портфеля'].tolist()
         else:
-            initial_value = portfolio_values[0] if portfolio_values else 0
-        
-        # Расчет процентного P&L
-        if initial_value > 0:
-            pnl_data['Суммарный P&L (%)'] = (pnl_data['Суммарный P&L'] / initial_value) * 100
-        else:
-            pnl_data['Суммарный P&L (%)'] = 0
-    else:
-        # Если недостаточно исторических данных - создаем синтетические данные для демонстрации
-        date_range = pd.date_range(start=start_date, end=end_date, freq='D')
-        
-        # Генерация случайных данных для P&L
-        np.random.seed(42)  # Для воспроизводимости результатов
-        daily_pnl_values = np.random.normal(0, total_balance * 0.01, len(date_range))
-        
-        # Создаем синтетические portfolio_values на основе daily_pnl
-        portfolio_values = [total_balance]  # Начинаем с текущего баланса
-        for pnl in daily_pnl_values:
-            portfolio_values.append(portfolio_values[-1] + pnl)
-        # Удаляем первый элемент, так как он соответствует значению до первого дня в date_range
-        portfolio_values.pop(0)
-        
-        # Накопленный P&L
-        cumulative_pnl = np.cumsum(daily_pnl_values)
-        
-        # Процент P&L относительно начального капитала
-        percentage_pnl = cumulative_pnl / total_balance * 100 if total_balance > 0 else np.zeros_like(cumulative_pnl)
-        
-        pnl_data = pd.DataFrame({
-            'Дата': date_range,
-            'Стоимость портфеля': portfolio_values,
-            'Суточный P&L': daily_pnl_values,
-            'Суммарный P&L': cumulative_pnl,
-            'Суммарный P&L (%)': percentage_pnl
-        })
-    
-    # Отображение суммарных метрик
+            st.warning("Нет данных о ценах для выбранного периода расчета.")
+
+    # Если pnl_data пуст после попытки расчета (нет цен или транзакций), генерируем заглушку
+    if pnl_data.empty:
+        st.info("Недостаточно данных для построения графика P&L.")
+        # Создаем пустой DataFrame с нужными колонками, чтобы код дальше не падал
+        pnl_data = pd.DataFrame(columns=['Дата', 'Стоимость портфеля', 'Суточный P&L', 'Суммарный P&L', 'Суммарный P&L (%)'])
+        pnl_data['Дата'] = pd.to_datetime(pnl_data['Дата'])
+        portfolio_values_display = [0, 0] # Для метрик
+
+    # --- Отображение суммарных метрик ДЛЯ ВЫБРАННОГО ИНТЕРВАЛА ОТОБРАЖЕНИЯ --- 
     col1, col2, col3 = st.columns(3)
-    
+
+    # Рассчитываем метрики на основе отфильтрованного pnl_data
+    total_pnl_display = 0
+    total_pnl_pct_display = 0
+    apy_display = 0
+
+    if len(portfolio_values_display) > 1:
+        start_value_display = portfolio_values_display[0]
+        end_value_display = portfolio_values_display[-1]
+        
+        total_pnl_display = end_value_display - start_value_display
+        
+        if start_value_display > 0:
+            total_pnl_pct_display = (total_pnl_display / start_value_display) * 100
+            # Расчет APY для периода отображения
+            actual_days_displayed = len(portfolio_values_display) # Используем фактическое количество дней в отфильтрованных данных
+            if actual_days_displayed > 0:
+                 apy_display = ((end_value_display / start_value_display) ** (365 / actual_days_displayed) - 1) * 100
+
     with col1:
-        final_pnl = pnl_data['Суммарный P&L'].iloc[-1]
-        arrow = "▲" if final_pnl >= 0 else "▼"
+        arrow_pnl = "▲" if total_pnl_display >= 0 else "▼"
         st.metric(
-            f"Суммарный P&L за {interval}",
-            f"{arrow} ${abs(final_pnl):,.2f}",
-            delta_color="normal" if final_pnl >= 0 else "inverse"
+            f"Суммарный P&L за {interval_key}",
+            f"{arrow_pnl} ${abs(total_pnl_display):,.2f}",
+            delta_color="normal" if total_pnl_display >= 0 else "inverse"
         )
     
     with col2:
-        final_pnl_pct = pnl_data['Суммарный P&L (%)'].iloc[-1]
-        arrow = "▲" if final_pnl_pct >= 0 else "▼"
+        arrow_pct = "▲" if total_pnl_pct_display >= 0 else "▼"
         st.metric(
-            f"Суммарный P&L (%) за {interval}",
-            f"{arrow} {abs(final_pnl_pct):.2f}%",
-            delta_color="normal" if final_pnl_pct >= 0 else "inverse"
+            f"Суммарный P&L (%) за {interval_key}",
+            f"{arrow_pct} {abs(total_pnl_pct_display):.2f}%",
+            delta_color="normal" if total_pnl_pct_display >= 0 else "inverse"
         )
     
     with col3:
-        if interval == "С момента покупки":
-            # Добавляем метрику ROI (Return on Investment)
-            roi = (portfolio_values[-1] / total_cost_basis - 1) * 100 if total_cost_basis > 0 else 0
-            arrow_roi = "▲" if roi >= 0 else "▼"
-            st.metric(
-                "ROI (доходность инвестиций)",
-                f"{arrow_roi} {abs(roi):.2f}%",
-                delta_color="normal" if roi >= 0 else "inverse"
-            )
-        else:
-            # Годовая процентная доходность (APY)
-            days_period = len(pnl_data)
-            if days_period > 0 and portfolio_values[0] > 0:
-                apy = ((portfolio_values[-1] / portfolio_values[0]) ** (365 / days_period) - 1) * 100
-                arrow_apy = "▲" if apy >= 0 else "▼"
-                st.metric(
-                    "Годовая доходность (APY)",
-                    f"{arrow_apy} {abs(apy):.2f}%",
-                    delta_color="normal" if apy >= 0 else "inverse"
-                )
+        # Убираем ROI, показываем APY всегда
+        arrow_apy = "▲" if apy_display >= 0 else "▼"
+        st.metric(
+            f"Годовая доходность (APY) за {interval_key}",
+            f"{arrow_apy} {abs(apy_display):.2f}%",
+            delta_color="normal" if apy_display >= 0 else "inverse"
+        )
     
-    # Графики P&L
+    # --- Графики P&L (используют отфильтрованный pnl_data) --- 
     # Создаем subplot с двумя графиками
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                         subplot_titles=("Суммарный P&L и P&L (%)", "Суточный P&L"),
@@ -1487,7 +1559,7 @@ def render_account_dashboard(username, price_data, assets):
     # Обновление макета
     fig.update_layout(
         height=700,
-        title_text=f"P&L за {interval}",
+        title_text=f"Динамика P&L за {interval_key} (с {display_start_date.strftime('%Y-%m-%d')})", # Обновляем заголовок
         legend=dict(
             orientation="h",
             yanchor="bottom",
@@ -1511,6 +1583,160 @@ def render_account_dashboard(username, price_data, assets):
     if st.button("Перейти к управлению активами"):
         st.session_state.active_page = "Управление активами"
         st.rerun()
+
+    # --- Секция Истории Стоимости Портфеля ---
+    st.header("Динамика стоимости портфеля")
+
+    # Получение всех транзакций пользователя для определения первой даты
+    transactions = get_user_transactions(username)
+    earliest_transaction_date = None
+    if transactions:
+        try:
+            # Убираем tz_localize, т.к. новая функция работает с tz-naive
+            transaction_dates = [pd.to_datetime(t["date"]).tz_localize(None) for t in transactions]
+            earliest_transaction_date = min(transaction_dates)
+        except (ValueError, TypeError):
+            st.warning("Не удалось определить дату первой транзакции из истории.")
+            earliest_transaction_date = datetime.now() - timedelta(days=180) # Фоллбэк
+    else:
+        # Если нет транзакций, нет смысла строить график истории
+        st.info("Нет транзакций для расчета истории стоимости портфеля.")
+        return # Выход из функции, т.к. график не построить
+
+    # Устанавливаем дату начала расчета НЕ РАНЕЕ первой транзакции
+    calculation_start_date = earliest_transaction_date
+    calculation_end_date = datetime.now() # Всегда до сегодня
+
+    # Выбор временного интервала
+    interval_options = {"7d": 7, "30d": 30, "90d": 90, "180d": 180} # Убрал 60d для краткости
+    interval_key = st.radio(
+        "Выберите интервал отображения (относительно сегодня):",
+        options=list(interval_options.keys()),
+        horizontal=True,
+        index=3 # По умолчанию 180d
+    )
+    days_to_display = interval_options[interval_key]
+
+    # Определение дат для ОТОБРАЖЕНИЯ
+    display_end_date = calculation_end_date
+    display_start_date = display_end_date - timedelta(days=days_to_display)
+
+    # Убедимся, что не пытаемся отобразить раньше, чем начался расчет
+    if display_start_date < calculation_start_date:
+        display_start_date = calculation_start_date
+
+    # --- Вызов НОВОЙ функции для расчета ПОЛНОЙ истории ---
+    # Расчет всегда идет с самой ранней даты транзакции
+    full_history_df = calculate_portfolio_value_history(
+        username,
+        price_data,
+        calculation_start_date,
+        calculation_end_date
+    )
+
+    # --- Фильтрация DataFrame для ОТОБРАЖЕНИЯ ---
+    if not full_history_df.empty:
+         # Приводим display_start/end к Timestamp без таймзоны для сравнения
+        display_start_ts = pd.Timestamp(display_start_date).normalize()
+        display_end_ts = pd.Timestamp(display_end_date).normalize()
+
+        display_history_df = full_history_df[
+            (full_history_df['Дата'] >= display_start_ts) &
+            (full_history_df['Дата'] <= display_end_ts)
+        ].copy()
+    else:
+        display_history_df = pd.DataFrame(columns=['Дата', 'Стоимость портфеля']) # Пустой для случая ошибок
+
+    # --- Отображение информации о периоде и метрик ---
+    if not display_history_df.empty:
+         st.write(f"Отображается динамика с {display_history_df['Дата'].min().strftime('%Y-%m-%d')} по {display_history_df['Дата'].max().strftime('%Y-%m-%d')} ({interval_key})")
+
+         col1, col2, col3 = st.columns(3)
+
+         # Рассчитываем метрики на основе отфильтрованного display_history_df
+         portfolio_values_display = display_history_df['Стоимость портфеля'].tolist()
+         total_pnl_display = 0
+         total_pnl_pct_display = 0
+         apy_display = 0
+
+         if len(portfolio_values_display) > 1:
+             start_value_display = portfolio_values_display[0]
+             end_value_display = portfolio_values_display[-1]
+
+             total_pnl_display = end_value_display - start_value_display
+
+             if start_value_display > 0:
+                 total_pnl_pct_display = (total_pnl_display / start_value_display) * 100
+                 # Расчет APY для периода отображения
+                 actual_days_displayed = (display_history_df['Дата'].max() - display_history_df['Дата'].min()).days + 1
+                 if actual_days_displayed > 0:
+                     # Проверка деления на 0, если начало и конец равны
+                     if start_value_display != 0:
+                          apy_display = ((end_value_display / start_value_display) ** (365 / actual_days_displayed) - 1) * 100
+                     else: # Если начальная стоимость 0, то APY не определен или бесконечен
+                         apy_display = float('inf') if end_value_display > 0 else 0
+
+         with col1:
+             arrow_pnl = "▲" if total_pnl_display >= 0 else "▼"
+             st.metric(
+                 f"Изменение баланса за {interval_key}", # Переименовано с P&L
+                 f"{arrow_pnl} ${abs(total_pnl_display):,.2f}",
+                 delta_color="normal" if total_pnl_display >= 0 else "inverse"
+             )
+
+         with col2:
+             arrow_pct = "▲" if total_pnl_pct_display >= 0 else "▼"
+             # Отображаем "N/A" если начальная стоимость 0
+             delta_val = f"{arrow_pct} {abs(total_pnl_pct_display):.2f}%" if start_value_display > 0 else "N/A"
+             st.metric(
+                 f"Изменение (%) за {interval_key}",
+                 delta_val,
+                 delta_color="normal" if total_pnl_pct_display >= 0 else "inverse"
+             )
+
+         with col3:
+             arrow_apy = "▲" if apy_display >= 0 else "▼"
+             # Отображаем "N/A" если APY не рассчитан или бесконечен
+             apy_val = f"{arrow_apy} {abs(apy_display):,.2f}%" if np.isfinite(apy_display) else "N/A"
+             st.metric(
+                 f"Годовая доходность (APY) за {interval_key}",
+                 apy_val,
+                 delta_color="normal" if apy_display >= 0 else "inverse"
+             )
+
+         # --- График Динамики Стоимости Портфеля ---
+         fig = go.Figure()
+
+         fig.add_trace(
+             go.Scatter(
+                 x=display_history_df['Дата'],
+                 y=display_history_df['Стоимость портфеля'],
+                 mode='lines',
+                 name='Стоимость портфеля',
+                 line=dict(color='blue', width=2),
+                 fill='tozeroy' # Заливка до оси X
+             )
+         )
+
+         # Обновление макета
+         fig.update_layout(
+             height=500, # Немного уменьшил высоту
+             title_text=f"Динамика стоимости портфеля за {interval_key}",
+             xaxis_title="Дата",
+             yaxis_title="Стоимость портфеля (USD)",
+             hovermode="x unified" # Улучшенный hover
+         )
+
+         # Отображение графика
+         st.plotly_chart(fig, use_container_width=True)
+
+    else:
+         # Если после фильтрации данных не осталось
+         st.warning("Нет данных о стоимости портфеля для отображения за выбранный период.")
+
+
+    # Добавим кнопку для управления активами (если она нужна здесь)
+    # st.info("Чтобы изменить состав портфеля, перейдите в раздел 'Управление активами'")
 
 def render_about():
     """Отображение страницы 'About'"""
