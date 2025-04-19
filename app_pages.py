@@ -119,33 +119,63 @@ def calculate_portfolio_value_history(username, price_data, start_date, end_date
         if current_portfolio_assets.get(asset, 0) <= 0:
             current_portfolio_assets.pop(asset, None)
 
+    # --- ОТЛАДКА: Вывод уникальных дат транзакций ---
+    print("------ Transaction Dates Info ------")
+    if not transactions_df.empty:
+        print("Unique normalized transaction dates:")
+        print(transactions_df['date_normalized'].unique())
+    else:
+        print("Transactions DataFrame is empty!")
+    print("----------------------------------")
+    # --- КОНЕЦ ОТЛАДКИ ---
+
     # --- Итерация по дням в заданном диапазоне ---
     last_prices = {}
     print_debug_counter = 0 # Счетчик для ограничения вывода
 
     for current_date in date_range:
         # --- ОТЛАДКА: Вывод перед обработкой дня ---
-        if print_debug_counter < 5 or current_date.date() in [pd.Timestamp('2025-04-01').date(), pd.Timestamp('2025-04-05').date(), pd.Timestamp('2025-04-09').date(), pd.Timestamp('2025-04-12').date()]:
+        is_debug_day = print_debug_counter < 5 or current_date.date() in [pd.Timestamp('2025-04-01').date(), pd.Timestamp('2025-04-05').date(), pd.Timestamp('2025-04-09').date(), pd.Timestamp('2025-04-12').date()]
+        if is_debug_day:
              print(f"\n--- Debug Day: {current_date.strftime('%Y-%m-%d')} ---")
-             print(f"Assets before daily txns: {current_portfolio_assets}")
+             print(f"Assets BEFORE daily txns: {current_portfolio_assets}")
         # --- КОНЕЦ ОТЛАДКИ ---
 
         # Обновляем состав портфеля на основе транзакций ЗА ЭТОТ ДЕНЬ
-        daily_transactions = transactions_df[transactions_df['date_normalized'] == current_date]
-        
+        # Сравниваем только дату (год, месяц, день), игнорируя время/таймзону
+        mask = transactions_df['date_normalized'].dt.date == current_date.date()
+        daily_transactions = transactions_df[mask]
+
+        # --- ОТЛАДКА: Проверка daily_transactions ---
+        if is_debug_day:
+            print(f"Found {len(daily_transactions)} transactions for today.")
+        # --- КОНЕЦ ОТЛАДКИ ---
+
+        # *** НАЧАЛО ЦИКЛА ОБРАБОТКИ ТРАНЗАКЦИЙ ДНЯ ***
         for _, txn in daily_transactions.iterrows():
             asset = txn['asset']
             quantity = txn['quantity']
             txn_type = txn['type']
-            
+
+            # --- ОТЛАДКА: ВНУТРИ ЦИКЛА ОБРАБОТКИ TXN ---
+            if is_debug_day:
+                print(f"  Processing txn: {txn_type} {asset} Qty: {quantity}")
+            # --- КОНЕЦ ОТЛАДКИ ---
+
             if txn_type == 'Покупка':
                 current_portfolio_assets[asset] = current_portfolio_assets.get(asset, 0) + quantity
             elif txn_type == 'Продажа':
                 current_portfolio_assets[asset] = current_portfolio_assets.get(asset, 0) - quantity
-            
+
             # Убираем активы с нулевым или отрицательным количеством после транзакции
             if current_portfolio_assets.get(asset, 0) <= 0:
                 current_portfolio_assets.pop(asset, None)
+        # *** КОНЕЦ ЦИКЛА ОБРАБОТКИ ТРАНЗАКЦИЙ ДНЯ ***
+
+        # --- ОТЛАДКА: Вывод состояния активов ПОСЛЕ обработки TXN ---
+        if is_debug_day:
+             print(f"Assets AFTER daily txns: {current_portfolio_assets}")
+        # --- КОНЕЦ ОТЛАДКИ ---
 
         # Расчет текущей стоимости портфеля на конец дня current_date
         portfolio_value = 0
@@ -208,7 +238,7 @@ def calculate_portfolio_value_history(username, price_data, start_date, end_date
                     value_added = quantity * current_price
                 
                 # --- ОТЛАДКА: Вывод для каждого актива ---
-                if print_debug_counter < 5 or current_date.date() in [pd.Timestamp('2025-04-01').date(), pd.Timestamp('2025-04-05').date(), pd.Timestamp('2025-04-09').date(), pd.Timestamp('2025-04-12').date()]:
+                if is_debug_day:
                     print(f"  Asset: {asset}, Qty: {quantity:.4f}, Price: {current_price}, Source: {price_source}, Added Value: {value_added:.2f}")
                 # --- КОНЕЦ ОТЛАДКИ ---
 
@@ -216,7 +246,7 @@ def calculate_portfolio_value_history(username, price_data, start_date, end_date
         portfolio_history.append({'Дата': current_date, 'Стоимость портфеля': portfolio_value})
 
         # --- ОТЛАДКА: Вывод итогов дня ---
-        if print_debug_counter < 5 or current_date.date() in [pd.Timestamp('2025-04-01').date(), pd.Timestamp('2025-04-05').date(), pd.Timestamp('2025-04-09').date(), pd.Timestamp('2025-04-12').date()]:
+        if is_debug_day:
             print(f"Total Portfolio Value for {current_date.strftime('%Y-%m-%d')}: {portfolio_value:.2f}")
             print_debug_counter += 1
         # --- КОНЕЦ ОТЛАДКИ ---
@@ -1444,74 +1474,81 @@ def render_account_dashboard(username, price_data, assets):
     
     # Таблица с активами
     st.subheader("Ваши активы")
-    
-    # Создаем датафрейм с активами
+
+    # Создаем датафрейм с активами (переделываем под новые требования)
     assets_data = []
-    for asset, quantity in portfolio_data["quantities"].items():
-        if quantity > 0:
-            # Получение текущей цены актива
-            current_price = price_data[asset].iloc[-1] if asset in price_data.columns else 0
-            
-            # Средняя цена покупки
-            avg_buy_price = portfolio_data["avg_prices"].get(asset, 0)
-            
-            # Расчет текущей стоимости и прибыли/убытка
-            current_value = quantity * current_price
-            invested_value = quantity * avg_buy_price
-            profit_loss = current_value - invested_value
-            profit_loss_percent = (profit_loss / invested_value * 100) if invested_value > 0 else 0
-            
-            # Расчет изменения за 24 часа
-            price_24h_ago = price_data[asset].iloc[-2] if asset in price_data.columns and len(price_data) > 1 else current_price
-            change_24h = (current_price - price_24h_ago) / price_24h_ago * 100 if price_24h_ago > 0 else 0
-            
-            assets_data.append({
-                "Актив": asset,
-                "Количество": quantity,
-                "Средняя цена": avg_buy_price,
-                "Текущая цена": current_price,
-                "Стоимость": current_value,
-                "Изменение 24ч (%)": change_24h,
-                "P&L": profit_loss,
-                "P&L (%)": profit_loss_percent
-            })
-    
-    # Сортировка по стоимости (по убыванию)
-    assets_df = pd.DataFrame(assets_data)
-    assets_df = assets_df.sort_values("Стоимость", ascending=False)
-    
-    # Форматирование таблицы
-    formatted_df = assets_df.copy()
-    formatted_df["Количество"] = formatted_df["Количество"].apply(lambda x: f"{x:,.8f}")
-    formatted_df["Средняя цена"] = formatted_df["Средняя цена"].apply(lambda x: f"${x:,.2f}")
-    formatted_df["Текущая цена"] = formatted_df["Текущая цена"].apply(lambda x: f"${x:,.2f}")
-    formatted_df["Стоимость"] = formatted_df["Стоимость"].apply(lambda x: f"${x:,.2f}")
-    formatted_df["Изменение 24ч (%)"] = formatted_df["Изменение 24ч (%)"].apply(
-        lambda x: f"**+{x:.2f}%**" if x > 0 else (f"**{x:.2f}%**" if x < 0 else "0.00%")
-    )
-    formatted_df["P&L"] = formatted_df["P&L"].apply(
-        lambda x: f"**+${x:,.2f}**" if x > 0 else (f"**-${abs(x):,.2f}**" if x < 0 else "$0.00")
-    )
-    formatted_df["P&L (%)"] = formatted_df["P&L (%)"].apply(
-        lambda x: f"**+{x:.2f}%**" if x > 0 else (f"**{x:.2f}%**" if x < 0 else "0.00%")
-    )
-    
-    # Стилизация таблицы с использованием HTML и CSS
-    st.markdown(
-        formatted_df.to_html(escape=False, index=False),
-        unsafe_allow_html=True
-    )
-    
-    # График распределения активов
+    if has_assets: # Убедимся, что portfolio_data не пустое
+        for asset, quantity in portfolio_data["quantities"].items():
+            if quantity > 0:
+                # Получение текущей цены актива
+                current_price = price_data[asset].iloc[-1] if asset in price_data.columns else 0
+                # Средняя цена покупки
+                avg_buy_price = portfolio_data["avg_prices"].get(asset, 0)
+                # Стоимость покупки (инвестированная сумма)
+                invested_value = quantity * avg_buy_price
+                # Расчет изменения за 24 часа
+                price_24h_ago = price_data[asset].iloc[-2] if asset in price_data.columns and len(price_data) > 1 else current_price
+                change_24h = (current_price - price_24h_ago) / price_24h_ago * 100 if price_24h_ago > 0 else 0
+
+                assets_data.append({
+                    "Актив": asset,
+                    "Количество": quantity,
+                    "Текущая цена": current_price,
+                    "Стоимость покупки": invested_value, # Новое название столбца
+                    "Изменение 24ч (%)": change_24h
+                })
+
+    if assets_data:
+        # Сортировка по стоимости покупки (по убыванию)
+        assets_df = pd.DataFrame(assets_data)
+        assets_df = assets_df.sort_values("Стоимость покупки", ascending=False)
+
+        # Форматирование таблицы для отображения
+        formatted_df = assets_df.copy()
+        formatted_df["Количество"] = formatted_df["Количество"].apply(lambda x: f"{x:,.8f}")
+        formatted_df["Текущая цена"] = formatted_df["Текущая цена"].apply(lambda x: f"${x:,.2f}")
+        formatted_df["Стоимость покупки"] = formatted_df["Стоимость покупки"].apply(lambda x: f"${x:,.2f}")
+        formatted_df["Изменение 24ч (%)"] = formatted_df["Изменение 24ч (%)"].apply(
+            lambda x: f"**+{x:.2f}%**" if x > 0 else (f"**{x:.2f}%**" if x < 0 else "0.00%")
+        )
+
+        # Указываем столбцы для отображения в нужном порядке
+        columns_to_display = ["Актив", "Количество", "Текущая цена", "Стоимость покупки", "Изменение 24ч (%)"]
+
+        # Стилизация таблицы с использованием HTML и CSS
+        st.markdown(
+            formatted_df[columns_to_display].to_html(escape=False, index=False),
+            unsafe_allow_html=True
+        )
+    else:
+        # Если assets_data пустой (даже если has_assets=True, но все quantity=0)
+         st.info("Нет активов с положительным количеством для отображения.")
+
+
+    # График распределения активов (можно оставить как есть, использует текущую стоимость)
     st.subheader("Распределение капитала")
-    fig = px.pie(
-        assets_df,
-        values="Стоимость",
-        names="Актив",
-        title="Распределение капитала по активам"
-    )
-    st.plotly_chart(fig)
-    
+    # ... (код графика pie chart остается без изменений, он использует текущую стоимость, что логично для распределения) ...
+    # Рассчитываем данные для pie chart снова, так как assets_df мог измениться
+    if has_assets and assets_data: # Проверяем что есть данные
+        pie_chart_data = []
+        for asset, quantity in portfolio_data["quantities"].items():
+            if quantity > 0:
+                current_price = price_data[asset].iloc[-1] if asset in price_data.columns else 0
+                current_value = quantity * current_price
+                pie_chart_data.append({"Актив": asset, "Стоимость": current_value})
+        
+        if pie_chart_data:
+            pie_df = pd.DataFrame(pie_chart_data)
+            fig_pie = px.pie(
+                pie_df,
+                values="Стоимость",
+                names="Актив",
+                title="Распределение капитала по текущей стоимости"
+            )
+            st.plotly_chart(fig_pie)
+        else:
+            st.info("Нет данных для графика распределения капитала.")
+
     # Секция динамики стоимости портфеля
     st.header("Динамика стоимости портфеля")
     
