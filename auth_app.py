@@ -148,15 +148,29 @@ else:
     
     # Меню навигации
     st.sidebar.header("Навигация")
-    page = st.sidebar.radio(
+    page_options = ["Мой кабинет", "Управление активами", "Единый торговый аккаунт", "Dashboard", "Portfolio Optimization", "Model Training", "Model Comparison", "Backtest Results", "About"]
+    
+    # Устанавливаем индекс для radio на основе текущей активной страницы в состоянии сессии
+    try:
+        current_page_index = page_options.index(st.session_state.active_page)
+    except ValueError:
+        current_page_index = 0 # По умолчанию первая страница, если значение некорректно
+        st.session_state.active_page = page_options[0]
+
+    selected_page = st.sidebar.radio(
         "Выберите раздел",
-        ["Мой кабинет", "Управление активами", "Единый торговый аккаунт", "Dashboard", "Portfolio Optimization", "Model Training", "Model Comparison", "Backtest Results", "About"]
+        page_options,
+        index=current_page_index, # Инициализируем radio текущей страницей из session_state
+        key="main_nav_radio" # Добавляем ключ для стабильности
     )
     
-    st.session_state.active_page = page
-    
+    # Обновляем состояние сессии, ТОЛЬКО если пользователь выбрал ДРУГУЮ страницу в radio
+    if selected_page != st.session_state.active_page:
+        st.session_state.active_page = selected_page
+        st.rerun() # Перезапускаем, чтобы обновить страницу немедленно
+
     # Страница личного кабинета пользователя
-    if page == "Мой кабинет":
+    if st.session_state.active_page == "Мой кабинет":
         st.header("Личный кабинет")
         
         # Получение информации о пользователе
@@ -290,35 +304,40 @@ else:
                 """)
                 
                 # Кнопка перехода к разделу "Управление активами"
-                if st.button("Перейти к управлению активами"):
+                if st.button("Перейти к управлению активами", key="goto_manage_assets_from_cabinet"):
                     st.session_state.active_page = "Управление активами"
                     st.rerun()
         else:
             st.error("Не удалось загрузить информацию о пользователе")
     
     # Страница единого торгового аккаунта в стиле Bybit
-    elif page == "Единый торговый аккаунт":
+    elif st.session_state.active_page == "Единый торговый аккаунт":
         render_account_dashboard(st.session_state.username, price_data, assets)
     
     # Страница управления активами и транзакциями
-    elif page == "Управление активами":
+    elif st.session_state.active_page == "Управление активами":
         render_transactions_manager(st.session_state.username, price_data, assets)
     
     # Подключение страниц из app_pages.py
-    elif page == "Dashboard":
+    elif st.session_state.active_page == "Dashboard":
         render_dashboard(st.session_state.username, price_data, model_returns, model_actions, assets)
     
-    elif page == "Portfolio Optimization":
+    elif st.session_state.active_page == "Portfolio Optimization":
         render_portfolio_optimization(st.session_state.username, price_data, assets)
     
-    elif page == "Model Training":
+    elif st.session_state.active_page == "Model Training":
         render_model_training(st.session_state.username, price_data, assets)
     
-    elif page == "Model Comparison":
+    elif st.session_state.active_page == "Model Comparison":
         render_model_comparison(st.session_state.username, model_returns, model_actions, price_data)
     
-    elif page == "Backtest Results":
+    elif st.session_state.active_page == "Backtest Results":
         render_backtest(st.session_state.username, model_returns, price_data)
     
-    elif page == "About":
+    elif st.session_state.active_page == "About":
         render_about() 
+
+
+'''
+poetry run streamlit run auth_app.py
+'''

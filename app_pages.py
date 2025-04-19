@@ -41,7 +41,7 @@ def render_dashboard(username, price_data, model_returns, model_actions, assets)
                 st.info("У вас пока нет активов в портфеле. Добавьте транзакции в разделе 'Управление активами', чтобы сформировать портфель.")
                 
                 # Кнопка перехода к разделу "Управление активами"
-                if st.button("Перейти к управлению активами"):
+                if st.button("Перейти к управлению активами", key="goto_manage_assets_from_dashboard"):
                     st.session_state.active_page = "Управление активами"
                     st.rerun()
             else:
@@ -1134,7 +1134,7 @@ def render_account_dashboard(username, price_data, assets):
         """)
         
         # Кнопка перехода к разделу "Управление активами"
-        if st.button("Перейти к управлению активами"):
+        if st.button("Перейти к управлению активами", key="goto_manage_assets_from_account"):
             st.session_state.active_page = "Управление активами"
             st.rerun()
         return
