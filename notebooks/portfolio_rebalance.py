@@ -1169,8 +1169,6 @@ if not metrics_data.empty:
     results_df['Max Drawdown (%)'] = results_df['Max Drawdown (%)'].apply(lambda x: format_value(x, '{:.2f}%'))
     results_df['Sharpe Ratio'] = results_df['Sharpe Ratio'].apply(lambda x: format_value(x, '{:.3f}'))
 
-    print("\nСводная таблица метрик:")
-    print(results_df)
 else:
     print("Нет данных для расчета метрик.")
 
@@ -1306,3 +1304,11 @@ for key in asset_sorted_keys:
 ax.legend(by_label.values(), by_label.keys(), loc='upper left', bbox_to_anchor=(1.03, 1), fontsize=9, ncol=1, borderaxespad=0.)
 
 # Adjust layout to prevent legend cutoff
+plt.tight_layout(rect=[0, 0, 0.9, 1]) # Adjust the right boundary to make space for legend
+
+# Save the plot to a file
+plt.savefig('portfolio_comparison_plot.png', bbox_inches='tight', dpi=300) # Added dpi for better resolution
+
+plt.show() # Optional: Keep show() if you want to see it interactively too
+
+print("--- Визуализация завершена и сохранена в portfolio_comparison_plot.png ---")
