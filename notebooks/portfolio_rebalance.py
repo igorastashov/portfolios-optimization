@@ -1095,29 +1095,78 @@ for i, current_time in enumerate(sim_data.index):
                      target_drl_weights = {asset: 1.0/len(current_portfolio_assets_drl) for asset in current_portfolio_assets_drl}
 
 
-        # Применяем ребалансировку DRL, если нужно и есть целевые веса
-        if perform_rebalance_drl and target_drl_weights and s_drl_state['value'] > 1e-9:
+        # Применяем ребалансировку DRL, если нужно
+        if (perform_rebalance_drl or is_transaction_time_now) and s_drl_state['value'] > 1e-9:
             value_to_rebalance_drl = s_drl_state['value'] # Без комиссии для DRL
-            new_holdings_drl = {}
-            recalculated_value_drl = 0
-            assets_in_target = set(target_drl_weights.keys())
 
-            for asset, weight in target_drl_weights.items():
-                price_col = f'{asset}_Price'
-                # Цена должна быть доступна (проверяли при формировании allocatable_drl_assets)
-                current_price = sim_data.loc[current_time, price_col]
-                if current_price > 1e-9:
-                     qty = (value_to_rebalance_drl * weight) / current_price
-                     new_holdings_drl[asset] = qty
-                     recalculated_value_drl += qty * current_price
-                # else: Актив уже был отфильтрован ранее
+            # Определяем текущие активы в портфеле этой DRL стратегии
+            current_holdings_drl = {a: q for a, q in s_drl_state['holdings'].items() if q > 1e-9}
+            current_held_assets = set(current_holdings_drl.keys())
 
-            s_drl_state['holdings'] = new_holdings_drl
-            s_drl_state['value'] = recalculated_value_drl
-            s_drl_state['last_rebalance'] = current_time
+            # <<< NEW: Определяем доступные активы для ребалансировки (текущие + стейблкоин, если есть цена) >>>
+            eligible_assets_for_rebalance = current_held_assets.copy() # Начинаем с текущих
+            stablecoin_price_col = f'{STABLECOIN_ASSET}_Price'
+            # Проверяем наличие данных И валидность цены стейблкоина на текущий момент
+            if has_stablecoin_data and stablecoin_price_col in sim_data.columns and pd.notna(sim_data.loc[current_time, stablecoin_price_col]):
+                 eligible_assets_for_rebalance.add(STABLECOIN_ASSET)
+            # Убираем активы, для которых нет цены на ТЕКУЩИЙ момент (на всякий случай)
+            eligible_assets_for_rebalance = {
+                 asset for asset in eligible_assets_for_rebalance
+                 if f'{asset}_Price' in sim_data.columns and pd.notna(sim_data.loc[current_time, f'{asset}_Price'])
+            }
 
+            final_weights_to_apply = {} # Веса, которые будем применять
+
+            if not eligible_assets_for_rebalance:
+                 # Если нет ни текущих активов, ни стейблкоина с ценой
+                 print(f"  ПРЕДУПРЕЖДЕНИЕ (DRL Rebalance @ {current_time}, {s_name}): Нет ДОСТУПНЫХ активов для ребалансировки (включая стейблкоин). Пропуск.")
+                 s_drl_state['last_rebalance'] = current_time
+            elif not target_drl_weights:
+                 # Если модель не дала весов, используем равные веса для ДОСТУПНЫХ активов
+                 print(f"  ПРЕДУПРЕЖДЕНИЕ (DRL Rebalance @ {current_time}, {s_name}): Модель не дала весов. Используем равные веса для доступных активов.")
+                 num_eligible = len(eligible_assets_for_rebalance)
+                 final_weights_to_apply = {asset: 1.0 / num_eligible for asset in eligible_assets_for_rebalance}
+            else:
+                 # <<< MODIFIED: Фильтруем предсказанные веса по ДОСТУПНЫМ активам >>>
+                 filtered_weights = {a: w for a, w in target_drl_weights.items() if a in eligible_assets_for_rebalance}
+
+                 if not filtered_weights or sum(filtered_weights.values()) < 1e-9:
+                      # Если модель дала 0 веса всем доступным активам или сумма близка к нулю
+                      print(f"  ПРЕДУПРЕЖДЕНИЕ (DRL Rebalance @ {current_time}, {s_name}): Нулевые/невалидные веса для доступных активов. Используем равные веса.")
+                      num_eligible = len(eligible_assets_for_rebalance)
+                      final_weights_to_apply = {asset: 1.0 / num_eligible for asset in eligible_assets_for_rebalance}
+                 else:
+                      # <<< MODIFIED: Нормализуем отфильтрованные веса >>>
+                      total_filtered_weight = sum(filtered_weights.values())
+                      final_weights_to_apply = {a: w / total_filtered_weight for a, w in filtered_weights.items()}
+
+            # Применяем ребалансировку только если есть финальные веса
+            if final_weights_to_apply:
+                 new_holdings_drl = {}
+                 recalculated_value_drl = 0
+
+                 # <<< MODIFIED: Используем final_weights_to_apply для eligible_assets_for_rebalance >>>
+                 for asset, weight in final_weights_to_apply.items():
+                     price_col = f'{asset}_Price'
+                     # Цена должна быть доступна (проверяли при формировании eligible_assets)
+                     current_price = sim_data.loc[current_time, price_col]
+                     if current_price > 1e-9:
+                          qty = (value_to_rebalance_drl * weight) / current_price
+                          # Добавляем только если количество > 0, чтобы не хранить нулевые холдинги
+                          if qty > 1e-9:
+                              new_holdings_drl[asset] = qty
+                              recalculated_value_drl += qty * current_price
+                     # else: цена <= 0, уже отфильтровано при создании eligible_assets
+
+                 s_drl_state['holdings'] = new_holdings_drl # Заменяем старые холдинги новыми
+                 s_drl_state['value'] = recalculated_value_drl # Обновляем стоимость
+                 s_drl_state['last_rebalance'] = current_time
+                 s_drl_state['last_weights'] = final_weights_to_apply # Сохраняем примененные веса
+
+            # else: Если final_weights_to_apply пуст, ребалансировка не произошла
+
+        # --- Эта часть остается как есть ---
         # Сохраняем фактические веса портфеля после ребалансировки (или старые)
-        # для использования на следующем шаге, если не будет ребалансировки
         current_value_drl = s_drl_state['value']
         actual_weights = {}
         if current_value_drl > 1e-9:
@@ -1129,8 +1178,9 @@ for i, current_time in enumerate(sim_data.index):
                          current_price = sim_data.loc[current_time, price_col]
                          if pd.notna(current_price) and current_price > 0:
                             actual_weights[asset] = (quantity * current_price) / current_value_drl
-        # Сохраняем актуальные веса, если они есть, иначе оставляем целевые (или старые)
-        s_drl_state['last_weights'] = actual_weights if actual_weights else target_drl_weights
+        # Сохраняем актуальные веса, если они есть, иначе оставляем последние примененные (или старые)
+        # --- MODIFIED: Fallback to last_weights if actual_weights is empty ---
+        s_drl_state['last_weights'] = actual_weights if actual_weights else s_drl_state.get('last_weights', {})
 
     # --- Стратегия: Perfect_Foresight ---
     s_pf_state = strategies['Perfect_Foresight']
