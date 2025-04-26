@@ -14,6 +14,10 @@ from stable_baselines3 import A2C, PPO, SAC, DDPG
 import json
 import traceback # Added for error handling
 import ta # <<< Import ta library
+# <<< Plotly Imports >>>
+import plotly.graph_objects as go
+import plotly.io as pio
+from plotly.subplots import make_subplots # Although not used for subplots now, good to have if needed later
 
 # Define INDICATORS globally or pass as argument if needed
 # <<< Rename dx_30 to adx and use ADXIndicator >>>
@@ -1157,95 +1161,155 @@ def run_portfolio_analysis(
              print("No metrics data available.")
              results_df_display = pd.DataFrame() # Return empty dataframe
 
-        # --- Step 5: Visualization ---
-        print("\n--- Generating Visualization ---")
-        plt.style.use('seaborn-v0_8-darkgrid')
-        fig, ax = plt.subplots(figsize=(17, 10))
+        # --- Step 5: Visualization (Plotly) ---
+        print("\n--- Generating Visualization (Plotly) ---")
+        # Set Plotly template
+        pio.templates.default = "plotly_dark"
+        fig = go.Figure()
 
+        # Map matplotlib linestyles to Plotly dash styles
+        linestyle_map = {
+            '-': 'solid',
+            '--': 'dash',
+            '-.': 'dashdot',
+            ':': 'dot'
+        }
+
+        # Plot strategy performance lines
         plot_order_base = {
             'Value_Perfect_Foresight': {'label': f'Perfect Foresight (Comm: {commission_rate*100:.2f}%)', 'color': 'cyan', 'style': '--', 'lw': 2.0, 'z': 11},
             'Value_Bank_Deposit': {'label': f'Bank Deposit ({bank_apr*100:.0f}% APR)', 'color': 'purple', 'style': '-', 'lw': 1.5, 'z': 6},
             'Value_Stablecoin_Only': {'label': f'Stablecoin Only ({STABLECOIN_ASSET})', 'color': 'green', 'style': '-', 'lw': 1.5, 'z': 7},
             'Value_Rebalance_To_Equal': {'label': f'Rebalance to Equal (Comm: {commission_rate*100:.2f}%)', 'color': 'blue', 'style': '--', 'lw': 2.5, 'z': 9},
-            'Value_Actual_Buy_Hold': {'label': 'Actual Buy & Hold', 'color': 'black', 'style': '-', 'lw': 2.5, 'z': 10},
+            'Value_Actual_Buy_Hold': {'label': 'Actual Buy & Hold', 'color': 'black', 'style': '-', 'lw': 2.5, 'z': 10}, # Use white/light color in dark mode? e.g., 'white'
         }
         drl_plot_settings = {
-            "DDPG": {"color": "red", "style": "-.", "lw": 2.0, "z": 8}, "A2C": {"color": "orange", "style": "-.", "lw": 1.8, "z": 8},
-            "PPO": {"color": "magenta", "style": "-.", "lw": 1.8, "z": 8}, "SAC": {"color": "brown", "style": "-.", "lw": 1.8, "z": 8},
+            "DDPG": {"color": "red", "style": "-.", "lw": 2.0, "z": 8},
+            "A2C": {"color": "orange", "style": "-.", "lw": 1.8, "z": 8},
+            "PPO": {"color": "magenta", "style": "-.", "lw": 1.8, "z": 8},
+            "SAC": {"color": "brown", "style": "-.", "lw": 1.8, "z": 8},
         }
         plot_order = plot_order_base.copy()
         for model_name in df_actions_all_models.keys():
-             col_name = f"Value_DRL_{model_name}"; strategy_label_name = f"DRL {model_name}"
-             settings = drl_plot_settings.get(model_name, {})
-             plot_order[col_name] = { "label": strategy_label_name, "color": settings.get("color", "grey"), "style": settings.get("style", "-."), "lw": settings.get("lw", 1.8), "z": settings.get("z", 8) }
+            col_name = f"Value_DRL_{model_name}"; strategy_label_name = f"DRL {model_name}"
+            settings = drl_plot_settings.get(model_name, {})
+            plot_order[col_name] = { "label": strategy_label_name, "color": settings.get("color", "grey"), "style": settings.get("style", "-."), "lw": settings.get("lw", 1.8), "z": settings.get("z", 8) }
 
-        print("  Plotting strategy performance...")
+        # --- Plotting strategy lines ---
+        print("  Plotting strategy performance lines...")
         for col, settings in plot_order.items():
-            if col in sim_data.columns: # Use sim_data for plotting
+            if col in sim_data.columns:
                 plot_data = sim_data[col].ffill()
-                if not plot_data.isnull().all() and not (plot_data == 0).all():
-                     ax.plot(plot_data.index, plot_data, label=settings['label'], color=settings['color'], linewidth=settings['lw'], linestyle=settings['style'], zorder=settings['z'])
-                else: print(f"    Skipping plot for {col}: All values NaN or 0.")
+                if not plot_data.isnull().all() and not (plot_data <= 1e-9).all(): # Avoid plotting near-zero lines on log scale
+                    fig.add_trace(go.Scatter(
+                        x=plot_data.index,
+                        y=plot_data,
+                        mode='lines',
+                        name=settings['label'],
+                        line=dict(
+                            color=settings['color'],
+                            width=settings['lw'],
+                            dash=linestyle_map.get(settings['style'], 'solid') # Map linestyle
+                        ),
+                        hovertemplate = f"<b>{settings['label']}</b><br>Date: %{{x|%Y-%m-%d %H:%M}}<br>Value: %{{y:,.2f}} USDT<extra></extra>"
+                        # zorder equivalent is trace order; add important traces last or reorder fig.data
+                    ))
+                else: print(f"    Skipping plot for {col}: All values NaN or near zero.")
             else: print(f"    Skipping plot for {col}: Column not found.")
 
+        # --- Plotting transaction markers ---
         print("  Plotting transaction markers...")
-        plotted_marker_labels = set()
+        buy_marker_times, buy_marker_values, buy_marker_texts = [], [], []
+        sell_marker_times, sell_marker_values, sell_marker_texts = [], [], []
+        # asset_color_map remains the same
         asset_color_map = {"BTCUSDT": "orange", "BNBUSDT": "gold", "LTCUSDT": "silver", "HBARUSDT": "cyan", STABLECOIN_ASSET: "lightgreen"}
         default_marker_color = "grey"
-        for index, row in portfolio_df.iterrows(): # Use original portfolio_df
+
+        for index, row in portfolio_df.iterrows():
             plot_time = row['Actual_Transaction_Time_Index']
             if pd.isna(plot_time) or plot_time not in sim_data.index: continue
-            value_at_transaction = sim_data.loc[plot_time, 'Value_Actual_Buy_Hold'] # Plot against B&H
+            value_at_transaction = sim_data.loc[plot_time, 'Value_Actual_Buy_Hold']
             if pd.isna(value_at_transaction): continue
 
             asset = row['Актив']; trans_type = row['Тип']
-            color = asset_color_map.get(asset, default_marker_color)
-            marker = "^" if trans_type == "Покупка" else "v"
-            label_key = f"{trans_type} ({asset})"
-            current_label = None
-            if label_key not in plotted_marker_labels: current_label = label_key; plotted_marker_labels.add(label_key)
-            ax.scatter(plot_time, value_at_transaction, color=color, marker=marker, s=80, zorder=15, label=current_label, edgecolors='black', alpha=0.8)
+            quantity = row['Количество']; price = row['Transaction_Price_Actual']
+            cost = quantity * price
 
+            hover_text = f"<b>{trans_type} {asset}</b><br>Date: {plot_time.strftime('%Y-%m-%d %H:%M')}<br>Qty: {quantity:.6f}<br>Price: ${price:,.2f}<br>Value: ${cost:,.2f}<extra></extra>"
+
+            if trans_type == "Покупка":
+                buy_marker_times.append(plot_time)
+                buy_marker_values.append(value_at_transaction)
+                buy_marker_texts.append(hover_text)
+            else: # Продажа
+                sell_marker_times.append(plot_time)
+                sell_marker_values.append(value_at_transaction)
+                sell_marker_texts.append(hover_text)
+
+        # Add markers as separate traces
+        if buy_marker_times:
+            fig.add_trace(go.Scatter(
+                x=buy_marker_times,
+                y=buy_marker_values,
+                mode='markers',
+                name='Покупка',
+                marker=dict(color='#00BFFF', size=8, symbol='triangle-up', line=dict(color='white', width=1)),
+                hovertemplate=buy_marker_texts,
+                showlegend=True # Show only once in legend
+            ))
+        if sell_marker_times:
+             fig.add_trace(go.Scatter(
+                x=sell_marker_times,
+                y=sell_marker_values,
+                mode='markers',
+                name='Продажа',
+                marker=dict(color='#FF6347', size=8, symbol='triangle-down', line=dict(color='white', width=1)),
+                hovertemplate=sell_marker_texts,
+                showlegend=True # Show only once in legend
+            ))
+
+
+        # --- Formatting plot --- Updated for Plotly
         print("  Formatting plot...")
-        ax.set_title(f"Сравнение стратегий ({days_history} дней до {today.strftime('%Y-%m-%d')}) - С учетом транзакций", fontsize=16)
-        ax.set_xlabel('Дата', fontsize=12); ax.set_ylabel('Стоимость портфеля (USDT) - Лог. шкала', fontsize=12)
-        ax.grid(True, linestyle=':', linewidth=0.6); plt.xticks(rotation=30, ha='right'); ax.set_yscale('log'); ax.minorticks_on()
-        ax.grid(which='major', linestyle='-', linewidth='0.5', color='gray'); ax.grid(which='minor', linestyle=':', linewidth='0.5', color='lightgray')
-        ax.yaxis.set_major_formatter(mticker.ScalarFormatter()); ax.yaxis.get_major_formatter().set_scientific(False); ax.yaxis.get_major_formatter().set_useOffset(False)
+        fig.update_layout(
+            title=f"Сравнение стратегий ({days_history} дней до {today.strftime('%Y-%m-%d')}) - С учетом транзакций",
+            title_x=0.5,
+            xaxis_title='Дата',
+            yaxis_title='Стоимость портфеля (USDT)',
+            yaxis_type="log", # Log scale
+            hovermode='x unified',
+            legend_title_text='Стратегии и Транзакции',
+            legend=dict(
+                traceorder="normal", # Or reversed
+                # Adjust font size if needed
+                # font=dict(
+                #     family="sans-serif",
+                #     size=10,
+                #     color="black"
+                # ),
+            ),
+            height=700, # Adjust height as needed
+            margin=dict(l=70, r=70, t=80, b=70) # Adjust margins
+        )
+        # Update axes appearance
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(128, 128, 128, 0.2)')
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(128, 128, 128, 0.2)', tickprefix="$")
 
-        try:
-            plot_cols = [col for col, settings in plot_order.items() if col in sim_data]
-            all_vals = sim_data[plot_cols][sim_data[plot_cols] > 1e-6] # Ignore zero/near-zero for limits
-            if not all_vals.empty:
-                min_val = all_vals.min().min(); max_val = all_vals.max().max()
-                if pd.notna(min_val) and pd.notna(max_val) and max_val > min_val: ax.set_ylim(bottom=min_val * 0.8, top=max_val * 1.2)
-                elif pd.notna(max_val): ax.set_ylim(top=max_val * 1.2)
-        except Exception as e: print(f"Warning: Could not set Y-axis limits: {e}")
+        # Remove matplotlib saving/showing
+        # plt.tight_layout(rect=[0, 0, 0.9, 1])
+        # plt.savefig('portfolio_comparison_plot.png', bbox_inches='tight', dpi=300)
+        # plt.show()
 
-        handles, labels = ax.get_legend_handles_labels()
-        by_label = OrderedDict(zip(labels, handles))
-        strategy_labels = {lbl: hnd for lbl, hnd in by_label.items() if not any(ttype in lbl for ttype in valid_types)}
-        transaction_labels = {lbl: hnd for lbl, hnd in by_label.items() if any(ttype in lbl for ttype in valid_types)}
-        def sort_key_transaction(label): type_order = 0 if 'Покупка' in label else 1; asset_name = label[label.find('(')+1:label.find(')')]; return (type_order, asset_name)
-        sorted_transaction_keys = sorted(transaction_labels.keys(), key=sort_key_transaction)
-        final_legend_order = OrderedDict()
-        for col, settings in plot_order.items():
-             label = settings.get('label')
-             if label in strategy_labels: final_legend_order[label] = strategy_labels[label]
-        for key in sorted_transaction_keys: final_legend_order[key] = transaction_labels[key]
-        ax.legend(final_legend_order.values(), final_legend_order.keys(), loc='upper left', bbox_to_anchor=(1.03, 1), fontsize=9, ncol=1, borderaxespad=0.)
-
-        plt.tight_layout(rect=[0, 0, 0.9, 1])
-        # Do not save or show plot here, return the figure object
         print("\n--- Portfolio Analysis Finished Successfully ---")
-        return results_df_display, fig
+        return results_df_display, fig # Return Plotly figure object
 
     except Exception as e:
         print("\n--- ERROR during Portfolio Analysis --- ")
         traceback.print_exc()
-        # Ensure plot is closed if it was created before error
-        if 'fig' in locals() and fig:
-             plt.close(fig)
+        # Ensure plot object is not returned on error if created
+        fig = None
+        # Close matplotlib plot if it was somehow created before error
+        # plt.close('all') # Close any potential matplotlib figures
         return None, None # Return None on error
 
 # Example usage (if run as standalone script for testing)
@@ -1289,6 +1353,6 @@ if __name__ == '__main__':
               print("\n--- Standalone Test Results --- ")
               print(results_df)
               # To view the plot when running standalone:
-              plt.show()
+              # plt.show()
          else:
               print("\n--- Standalone Test Failed --- ")

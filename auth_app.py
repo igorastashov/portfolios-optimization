@@ -823,7 +823,7 @@ else:
         
         if 'analysis_figure' in st.session_state and st.session_state.analysis_figure is not None:
              st.subheader("График сравнения стратегий")
-             st.pyplot(st.session_state.analysis_figure)
+             st.plotly_chart(st.session_state.analysis_figure, use_container_width=True)
 
     # Страница управления активами и транзакциями
     elif st.session_state.active_page == "Управление активами":
