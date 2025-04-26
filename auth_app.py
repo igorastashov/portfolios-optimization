@@ -875,7 +875,7 @@ else:
         # --- Define DRL training assets --- #
         # !! Важно: Этот список ДОЛЖЕН точно совпадать с активами, использованными при обучении моделей !!
         DRL_TRAINING_ASSETS_RECO = ['APTUSDT', 'CAKEUSDT', 'HBARUSDT', 'JUPUSDT', 'PEPEUSDT', 'STRKUSDT', 'USDCUSDT']
-        st.info(f"Модель генерирует веса для активов: {', '.join(DRL_TRAINING_ASSETS_RECO)}. Рекомендация ниже покажет целевое распределение для ваших **текущих активов** из этого списка + **{STABLECOIN_ASSET}**.")
+        st.info(f"Модель DRL была обучена на определенном наборе активов. Рекомендация ниже показывает целевое распределение **только для тех активов из этого набора, которые есть у вас сейчас**, плюс **{STABLECOIN_ASSET}** как тихую гавань.")
 
         data_path_reco = "data"
         drl_models_dir_reco = "notebooks/trained_models"
