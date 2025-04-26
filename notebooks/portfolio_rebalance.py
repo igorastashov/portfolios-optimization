@@ -947,15 +947,15 @@ for i, current_time in enumerate(sim_data.index):
                     if 'holdings' in state: # Стратегии, держащие крипту
                          state['value'] += cost # Увеличиваем стоимость на сумму покупки
                          state['holdings'][asset] = state['holdings'].get(asset, 0) + quantity
+                    # <<< RESTORED: Logic to add purchase cost to Bank/Stablecoin >>>
                     elif s_name in ['Stablecoin_Only', 'Bank_Deposit']: # Стратегии - кэш прокси
                          state['value'] += cost # Добавляем стоимость покупки (капитал аллоцирован сюда)
-                         # if state['value'] < 0: state['value'] = 0 # Предотвращаем отрицательный баланс (this check might be redundant now)
 
             elif trans_type == 'Продажа':
                 proceeds = quantity * price
                 can_process_sale_globally = False # Флаг, что продажа вообще возможна хотя бы в одной крипто-стратегии
 
-                # Сначала обрабатываем продажу для крипто-стратегий
+                # Сначала обрабатываем продажу ТОЛЬКО для крипто-стратегий
                 for s_name, state in strategies.items():
                     if 'holdings' in state: # Только для стратегий с холдингами
                          asset_holding = state['holdings'].get(asset, 0)
@@ -965,24 +965,23 @@ for i, current_time in enumerate(sim_data.index):
                              state['holdings'][asset] -= quantity
                              if state['holdings'][asset] < 1e-9:
                                  del state['holdings'][asset] # Удаляем актив, если его не осталось
-                             # Уменьшаем стоимость стратегии НА СУММУ ВЫВОДА
+                             # Уменьшаем стоимость крипто-стратегии НА СУММУ ВЫВОДА
                              state['value'] -= proceeds
                              if state['value'] < 0: state['value'] = 0 # Стоимость не может быть < 0
                          elif asset_holding > 1e-9: # Если актива недостаточно
                               print(f"  ПРЕДУПРЕЖДЕНИЕ ({current_time}): Недостаточно {asset} ({asset_holding:.4f}) для продажи {quantity:.4f} в стратегии {s_name}. Продажа для этой стратегии пропущена.")
                          # Если актива вообще нет, ничего не делаем для этой стратегии
+                    # Stablecoin_Only и Bank_Deposit здесь НЕ затрагиваются
 
                 # Если продажа была возможна хотя бы для одной крипто-стратегии,
-                # то деньги поступили на счета кэш-прокси стратегий
+                # учитываем общий вывод средств
                 if can_process_sale_globally:
                     total_withdrawn_overall += proceeds
                     withdrawal_this_step += proceeds
-                    # Обновляем кэш-стратегии
-                    for s_name, state in strategies.items():
-                         if s_name in ['Stablecoin_Only', 'Bank_Deposit']:
-                              state['value'] += proceeds # Деньги пришли
+                    # Никаких действий с Stablecoin_Only/Bank_Deposit здесь НЕТ
                 else:
-                    print(f"  ПРЕДУПРЕЖДЕНИЕ ({current_time}): Продажа {quantity:.4f} {asset} невозможна ни в одной крипто-стратегии. Вывод средств не выполнен, кэш-стратегии не обновлены.")
+                    # Сообщение немного изменено, т.к. кэш-стратегии не должны обновляться
+                    print(f"  ПРЕДУПРЕЖДЕНИЕ ({current_time}): Продажа {quantity:.4f} {asset} невозможна ни в одной крипто-стратегии. Вывод средств не выполнен.")
 
     # 3. Логика ребалансировки для Стратегий 2, 5 и DRL (без изменений здесь)
 
