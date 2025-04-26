@@ -92,6 +92,22 @@ class FeatureEngineer:
         return df
 
 
+# --- Standalone Softmax Normalization Function --- #
+def softmax_normalization(actions):
+    """Normalizes actions using softmax for weight distribution."""
+    actions = np.array(actions)
+    stable_actions = actions - np.max(actions)
+    numerator = np.exp(stable_actions)
+    denominator = np.sum(numerator)
+    if denominator == 0 or not np.isfinite(denominator) or denominator < 1e-9:
+        print("Warning: Softmax denominator issue. Using uniform weights.")
+        # Determine dimension based on input shape
+        action_dim = actions.shape[-1]
+        return np.ones(action_dim) / action_dim
+    softmax_output = numerator / denominator
+    # Ensure output sums to 1 (handle potential minor floating point errors)
+    return softmax_output / np.sum(softmax_output)
+
 # --- StockPortfolioEnv Class (Copied and slightly adapted) ---
 class StockPortfolioEnv(gym.Env):
     metadata = {'render.modes': ['human']}
@@ -181,7 +197,7 @@ class StockPortfolioEnv(gym.Env):
             return self.state, 0, self.terminal, False, {}
 
         else:
-            weights = self.softmax_normalization(actions)
+            weights = softmax_normalization(actions)
             self.actions_memory.append(weights)
             last_day_memory_data = self.df.loc[self.df.index == self.day] # Data from previous step
 
@@ -260,17 +276,6 @@ class StockPortfolioEnv(gym.Env):
 
     def render(self, mode='human'):
         return self.state
-
-    def softmax_normalization(self, actions):
-        actions = np.array(actions)
-        stable_actions = actions - np.max(actions)
-        numerator = np.exp(stable_actions)
-        denominator = np.sum(numerator)
-        if denominator == 0 or not np.isfinite(denominator) or denominator < 1e-9: # Added threshold
-            print("Warning: Softmax denominator issue. Using uniform weights.")
-            return np.ones_like(actions) / self.stock_dim
-        softmax_output = numerator / denominator
-        return softmax_output / np.sum(softmax_output)
 
     def save_asset_memory(self):
         min_len = min(len(self.date_memory), len(self.portfolio_return_memory))

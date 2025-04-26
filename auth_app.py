@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import traceback # Ensure traceback is imported
+import json # For holdings display
 
 # Импорт модулей приложения
 from portfolios_optimization.data_loader import load_price_data, load_return_data, load_model_actions
@@ -21,6 +22,21 @@ from portfolios_optimization.authentication import (
     update_user_portfolio, get_user_portfolios, get_user_portfolio, get_portfolio_with_quantities,
     get_user_transactions
 )
+
+# --- Imports needed for Recommendations --- #
+from portfolio_analyzer import ( # Assuming these are defined in portfolio_analyzer.py
+    preprocess_asset_data, # Need this helper
+    FeatureEngineer,       # Need the class
+    # StockPortfolioEnv,     # Might not be needed directly if DRLAgent handles env creation/reset
+    DRLAgent,              # Need the agent class for prediction method
+    INDICATORS,            # Need the list of indicators used for training
+    STABLECOIN_ASSET,      # Need the stablecoin identifier
+    softmax_normalization, # Need the normalization function
+    # <<< REMOVE A2C, PPO, etc. from here >>>
+)
+# <<< Add direct import for SB3 models >>>
+from stable_baselines3 import A2C, PPO, SAC, DDPG
+# --- End Imports for Recommendations --- #
 
 # <<< NEW: Import the analysis function >>>
 from portfolio_analyzer import run_portfolio_analysis
@@ -152,16 +168,15 @@ else:
     
     # Меню навигации
     st.sidebar.header("Навигация")
-    page_options = ["Мой кабинет", "Управление активами", "Единый торговый аккаунт", "Анализ портфеля"]
+    page_options = ["Мой кабинет", "Управление активами", "Единый торговый аккаунт", "Анализ портфеля", "Рекомендации"]
     
     # Устанавливаем индекс для radio на основе текущей активной страницы в состоянии сессии
     try:
-        # Handle case where previously active page might be removed
         if st.session_state.active_page not in page_options:
-            st.session_state.active_page = page_options[0] # Default to first available
+            st.session_state.active_page = page_options[0]
         current_page_index = page_options.index(st.session_state.active_page)
     except ValueError:
-        current_page_index = 0 # По умолчанию первая страница
+        current_page_index = 0
         st.session_state.active_page = page_options[0]
 
     selected_page = st.sidebar.radio(
@@ -171,7 +186,6 @@ else:
         key="main_nav_radio"
     )
     
-    # Обновляем состояние сессии, ТОЛЬКО если пользователь выбрал ДРУГУЮ страницу в radio
     if selected_page != st.session_state.active_page:
         st.session_state.active_page = selected_page
         st.rerun()
@@ -846,7 +860,214 @@ else:
         render_backtest(st.session_state.username, model_returns, price_data)
     
     elif st.session_state.active_page == "About":
-        render_about() 
+        render_about()
+
+    # <<< Add block for the new Recommendations page >>>
+    elif st.session_state.active_page == "Рекомендации":
+        st.header("Рекомендации по ребалансировке портфеля (DRL)")
+        st.markdown("Выберите DRL-стратегию для получения рекомендуемого распределения активов из **набора, на котором обучалась модель.**")
+
+        # --- Настройки Рекомендации ---
+        st.subheader("Параметры")
+        drl_model_names = ["A2C", "PPO", "SAC", "DDPG"]
+        selected_model_name = st.selectbox("Выберите DRL модель:", drl_model_names)
+
+        # --- Define DRL training assets --- #
+        # !! Важно: Этот список ДОЛЖЕН точно совпадать с активами, использованными при обучении моделей !!
+        DRL_TRAINING_ASSETS_RECO = ['APTUSDT', 'CAKEUSDT', 'HBARUSDT', 'JUPUSDT', 'PEPEUSDT', 'STRKUSDT', 'USDCUSDT']
+        st.info(f"Модель генерирует веса для активов: {', '.join(DRL_TRAINING_ASSETS_RECO)}. Рекомендация ниже покажет целевое распределение для ваших **текущих активов** из этого списка + **{STABLECOIN_ASSET}**.")
+
+        data_path_reco = "data"
+        drl_models_dir_reco = "notebooks/trained_models"
+        st.caption(f"Путь к данным: {os.path.abspath(data_path_reco)}, Путь к моделям: {os.path.abspath(drl_models_dir_reco)}")
+
+        # Кнопка для получения рекомендации
+        if st.button(f"Получить рекомендацию от {selected_model_name}", use_container_width=True):
+            with st.spinner(f"Загрузка данных и запуск модели {selected_model_name}..."):
+                try:
+                    # --- 1. Get Current Portfolio Value --- #
+                    portfolio_data_reco = get_portfolio_with_quantities(st.session_state.username)
+                    total_portfolio_value = 0
+                    if portfolio_data_reco and any(portfolio_data_reco["quantities"].values()):
+                        # Use price_data loaded globally for the app
+                        latest_prices_reco = price_data.iloc[-1] if not price_data.empty else None
+                        if latest_prices_reco is not None:
+                            for asset, quantity in portfolio_data_reco["quantities"].items():
+                                if quantity > 0 and asset in latest_prices_reco.index:
+                                    total_portfolio_value += quantity * latest_prices_reco[asset]
+                        else:
+                            st.error("Не удалось получить последние цены активов для расчета общей стоимости портфеля.")
+                            st.stop()
+                    if total_portfolio_value < 1e-6:
+                        st.warning("Текущая стоимость портфеля равна нулю или не удалось ее рассчитать. Рекомендация невозможна.")
+                        st.stop()
+
+                    st.write(f"Текущая общая стоимость вашего портфеля: ${total_portfolio_value:,.2f}")
+
+                    # --- 2. Load Latest Data for DRL Assets --- #
+                    # Determine lookback period (max indicator window + cov lookback)
+                    # Example: Max window = 60 (SMA), Cov lookback = 24 -> need ~84 hours + buffer
+                    lookback_days_data = 5 # Load last 5 days of hourly data (adjust as needed)
+                    end_date_data = datetime.now()
+                    start_date_data = end_date_data - timedelta(days=lookback_days_data)
+
+                    all_drl_data_frames = []
+                    print(f"Loading latest data for {len(DRL_TRAINING_ASSETS_RECO)} DRL assets...")
+                    print(f"Filtering data between: {start_date_data} and {end_date_data}")
+                    for asset in DRL_TRAINING_ASSETS_RECO:
+                        filepath = os.path.join(data_path_reco, f"{asset}_hourly_data.csv")
+                        df_asset = preprocess_asset_data(filepath, asset, STABLECOIN_ASSET)
+                        if not df_asset.empty:
+                             print(f"  {asset}: Loaded {len(df_asset)} rows. Date range: {df_asset['date'].min()} to {df_asset['date'].max()}")
+                             df_asset_filtered = df_asset[(df_asset['date'] >= start_date_data) & (df_asset['date'] <= end_date_data)]
+                             print(f"  {asset}: Filtered to {len(df_asset_filtered)} rows.")
+                             if not df_asset_filtered.empty:
+                                all_drl_data_frames.append(df_asset_filtered)
+                        else:
+                              st.error(f"Не удалось загрузить или обработать критически важные данные для DRL актива: {asset}. Рекомендация невозможна.")
+                              st.stop()
+
+                    if not all_drl_data_frames:
+                         st.error(f"Не найдено актуальных данных для DRL активов в диапазоне {start_date_data.strftime('%Y-%m-%d')} - {end_date_data.strftime('%Y-%m-%d')}. Проверьте актуальность CSV файлов.")
+                         st.stop()
+
+                    latest_drl_data = pd.concat(all_drl_data_frames, ignore_index=True)
+
+                    # --- 3. Preprocess Data (Features + Covariance) --- #
+                    print("Preprocessing latest data (FeatureEngineer)...")
+                    fe = FeatureEngineer(use_technical_indicator=True, tech_indicator_list=INDICATORS)
+                    drl_processed = fe.preprocess_data(latest_drl_data.copy()) # Pass copy
+                    # Note: fe.preprocess_data now includes dropna() based on previous steps
+                    if drl_processed.empty:
+                        st.error("Ошибка FeatureEngineer: DataFrame пуст после добавления индикаторов и dropna(). Возможно, недостаточно свежих данных.")
+                        st.stop()
+
+                    print("Calculating latest covariance matrix...")
+                    lookback_cov = 24 # Standard lookback for covariance
+                    drl_processed = drl_processed.sort_values(['date', 'tic'])
+                    last_date_available = drl_processed['date'].max()
+                    # Get data for the last lookback_cov hours ending at the last available date
+                    cov_data_input = drl_processed[drl_processed['date'] > (last_date_available - timedelta(hours=lookback_cov))].copy()
+                    if len(cov_data_input['date'].unique()) < lookback_cov / 2: # Basic check for enough data
+                         st.error(f"Недостаточно данных ({len(cov_data_input['date'].unique())} часов) для расчета ковариации (требуется около {lookback_cov} часов).")
+                         st.stop()
+
+                    price_lookback = cov_data_input.pivot_table(index='date', columns='tic', values='close')
+                    price_lookback = price_lookback.reindex(columns=DRL_TRAINING_ASSETS_RECO, fill_value=np.nan)
+                    return_lookback = price_lookback.pct_change().dropna(how='all')
+                    latest_cov_matrix = np.zeros((len(DRL_TRAINING_ASSETS_RECO), len(DRL_TRAINING_ASSETS_RECO)))
+                    if len(return_lookback) >= len(DRL_TRAINING_ASSETS_RECO):
+                         return_lookback_valid = return_lookback.dropna(axis=1, how='all')
+                         if not return_lookback_valid.empty and return_lookback_valid.shape[1] > 1:
+                              latest_cov_matrix = return_lookback_valid.cov().reindex(index=DRL_TRAINING_ASSETS_RECO, columns=DRL_TRAINING_ASSETS_RECO).fillna(0).values
+
+                    # --- 4. Construct Latest State --- #
+                    print("Constructing latest observation state...")
+                    last_processed_data = drl_processed[drl_processed['date'] == last_date_available]
+                    if last_processed_data.empty:
+                         st.error("Не удалось извлечь данные для последнего состояния после обработки.")
+                         st.stop()
+                    # Ensure data is sorted by the canonical asset list order for consistency
+                    last_processed_data = last_processed_data.set_index('tic').reindex(DRL_TRAINING_ASSETS_RECO).reset_index()
+
+                    # Extract indicators for the last timestamp for all DRL assets
+                    indicator_values = last_processed_data[INDICATORS].values.T # Shape (num_indicators, num_assets)
+                    # Combine cov matrix and indicators
+                    latest_state = np.append(latest_cov_matrix, indicator_values, axis=0) # Shape (stock_dim + num_ind, stock_dim)
+                    # Ensure state shape matches expected (15, 7)
+                    expected_shape = (len(DRL_TRAINING_ASSETS_RECO) + len(INDICATORS), len(DRL_TRAINING_ASSETS_RECO))
+                    if latest_state.shape != expected_shape:
+                        st.error(f"Ошибка формы состояния: получено {latest_state.shape}, ожидалось {expected_shape}. Проверьте данные и индикаторы.")
+                        st.stop()
+
+                    # --- 5. Load Selected Model --- #
+                    print(f"Loading model {selected_model_name}...")
+                    model_file = os.path.join(drl_models_dir_reco, f"trained_{selected_model_name.lower()}.zip")
+                    if not os.path.exists(model_file):
+                         st.error(f"Файл модели не найден: {model_file}")
+                         st.stop()
+                    model_class_reco = globals()[selected_model_name] # Get class by name
+                    model = model_class_reco.load(model_file)
+
+                    # --- 6. Predict Action --- #
+                    print("Predicting action...")
+                    # Model expects a batch dimension, add it if predicting single state
+                    # latest_state_batch = np.expand_dims(latest_state, axis=0)
+                    # However, stable-baselines3 predict usually handles single obs automatically
+                    raw_actions, _ = model.predict(latest_state, deterministic=True)
+
+                    # --- 7. Normalize Weights --- #
+                    print("Normalizing weights...")
+                    target_weights_raw = softmax_normalization(raw_actions)
+                    target_weights_dict_raw = {asset: weight for asset, weight in zip(DRL_TRAINING_ASSETS_RECO, target_weights_raw)}
+
+                    # --- 8. Filter, Renormalize, Calculate Target Values & Display --- #
+                    st.markdown("--- ")
+                    st.subheader(f"Рекомендация от {selected_model_name} (для текущих активов + {STABLECOIN_ASSET})")
+
+                    # Get current user assets (only those also in DRL training set)
+                    current_user_assets_in_drl_set = set()
+                    if portfolio_data_reco and any(portfolio_data_reco["quantities"].values()):
+                         current_user_assets_in_drl_set = {
+                              asset for asset, quantity in portfolio_data_reco["quantities"].items()
+                              if quantity > 1e-9 and asset in DRL_TRAINING_ASSETS_RECO
+                         }
+
+                    # Define the set of assets to consider for the final recommendation
+                    relevant_assets = current_user_assets_in_drl_set.copy()
+                    relevant_assets.add(STABLECOIN_ASSET) # Always include stablecoin
+
+                    # Filter the raw weights to include only relevant assets
+                    filtered_weights = {asset: target_weights_dict_raw.get(asset, 0.0)
+                                        for asset in relevant_assets}
+
+                    # Renormalize the filtered weights
+                    total_filtered_weight = sum(filtered_weights.values())
+                    final_target_weights = {}
+                    if total_filtered_weight > 1e-9:
+                        final_target_weights = {asset: weight / total_filtered_weight
+                                                for asset, weight in filtered_weights.items()}
+                    elif relevant_assets: # If sum is zero, but we have assets, distribute equally
+                        print("Warning: Sum of filtered weights is zero. Distributing equally among relevant assets.")
+                        num_relevant = len(relevant_assets)
+                        final_target_weights = {asset: 1.0 / num_relevant for asset in relevant_assets}
+                    else: # Should not happen if stablecoin is always added
+                         st.error("Не удалось определить релевантные активы для рекомендации.")
+                         st.stop()
+
+                    st.markdown(f"Модель предлагает следующее распределение капитала (${total_portfolio_value:,.2f}) между **вашими активами из набора DRL и {STABLECOIN_ASSET}**: ")
+
+                    # Calculate final target values
+                    results_list = []
+                    for asset, weight in final_target_weights.items():
+                        target_value = total_portfolio_value * weight
+                        results_list.append({
+                            "Актив": asset,
+                            "Рекомендуемый вес (%)": weight * 100,
+                            "Целевая стоимость ($": target_value
+                        })
+
+                    results_df_reco = pd.DataFrame(results_list)
+                    results_df_reco = results_df_reco.sort_values(by="Рекомендуемый вес (%)", ascending=False).reset_index(drop=True)
+
+                    # Display table
+                    st.dataframe(results_df_reco.style.format({
+                        "Рекомендуемый вес (%)": "{:.2f}%",
+                        "Целевая стоимость ($": "${:,.2f}"
+                    }))
+
+                    # Optional: Display as bar chart
+                    st.subheader("Визуализация весов")
+                    # Use the final filtered/renormalized weights for the chart
+                    chart_data = results_df_reco.set_index("Актив")["Рекомендуемый вес (%)"] / 100.0
+                    st.bar_chart(chart_data)
+
+                    st.success("Рекомендация успешно сгенерирована!")
+
+                except Exception as e:
+                    st.error(f"Произошла ошибка при генерации рекомендации: {e}")
+                    traceback.print_exc()
+        pass # End of Recommendations page block
 
 
 '''
