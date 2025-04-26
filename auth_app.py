@@ -436,23 +436,49 @@ else:
         # --- Load Historical Data (Function definition kept separate for clarity) --- 
         @st.cache_data(ttl=1800)
         def load_and_preprocess_historical_data_uta(assets_list):
-            csv_base_path = 'D:\\__projects__\\diploma\\portfolios-optimization\\data'
+            csv_base_path = 'D:\\__projects__\\diploma\\portfolios-optimization\\data' # Consider making this relative or configurable
             all_prices = {}
             data_found = False
             min_start_date = pd.Timestamp.max.tz_localize(None)
             for asset in assets_list:
                 file_path = os.path.join(csv_base_path, f'{asset}_hourly_data.csv')
                 try:
-                    df = pd.read_csv(file_path)
-                    if 'Open time' not in df.columns: time_col = next((c for c in df.columns if 'time' in c.lower()), None); df.rename(columns={time_col:'Open time'}, inplace=True)
-                    if 'Close' not in df.columns: price_col = next((c for c in df.columns if 'close' in c.lower()), None); df.rename(columns={price_col:'Close'}, inplace=True)
-                    df['Open time'] = pd.to_datetime(df['Open time'])
-                    df = df.set_index('Open time')
+                    # --- Robust Date Parsing --- 
+                    # Read Open time as string first
+                    df = pd.read_csv(file_path, dtype={'Open time': str}) 
+                    
+                    # Rename columns if necessary (case-insensitive search)
+                    time_col_found = 'Open time' # Assume default first
+                    if 'Open time' not in df.columns:
+                        time_col_found = next((c for c in df.columns if 'time' in c.lower()), None)
+                        if time_col_found: df.rename(columns={time_col_found:'Open time'}, inplace=True)
+                        else: raise ValueError("Timestamp column ('Open time' or similar) not found.")
+
+                    price_col_found = 'Close' # Assume default first
+                    if 'Close' not in df.columns:
+                        price_col_found = next((c for c in df.columns if 'close' in c.lower()), None)
+                        if price_col_found: df.rename(columns={price_col_found:'Close'}, inplace=True)
+                        else: raise ValueError("Price column ('Close' or similar) not found.")
+                    
+                    # Parse dates robustly
+                    parsed_ms = pd.to_datetime(df['Open time'], unit='ms', errors='coerce')
+                    parsed_str = pd.to_datetime(df.loc[parsed_ms.isna(), 'Open time'], errors='coerce')
+                    df['date_index'] = parsed_ms.fillna(parsed_str)
+                    df.dropna(subset=['date_index'], inplace=True)
+                    df = df.set_index('date_index')
+                    # --- End Robust Date Parsing ---
+
                     df = df[['Close']].rename(columns={'Close': f'{asset}_Price'})
-                    df[f'{asset}_Price'] = df[f'{asset}_Price'].astype(float)
-                    all_prices[asset] = df
-                    data_found = True
-                    if not df.empty: min_start_date = min(min_start_date, df.index.min())
+                    df[f'{asset}_Price'] = pd.to_numeric(df[f'{asset}_Price'], errors='coerce') # Ensure numeric
+                    df.dropna(subset=[f'{asset}_Price'], inplace=True) # Drop if Close price is invalid
+                    
+                    if not df.empty:
+                        all_prices[asset] = df
+                        data_found = True
+                        min_start_date = min(min_start_date, df.index.min())
+                        
+                except FileNotFoundError:
+                     st.warning(f"Файл данных не найден для {asset}: {file_path}")
                 except Exception as e:
                     st.warning(f"Ошибка загрузки/обработки {asset}: {e}")
             if not data_found: return pd.DataFrame(), pd.Timestamp.now().tz_localize(None)
@@ -1188,10 +1214,25 @@ else:
                 st.error(f"Ошибка при построении графика нормализованных цен: {e}")
 
             # --- Correlation Heatmap Section ---
+            st.markdown("#### Корреляция доходностей") # Adjusted title slightly
+            # Add period selection for correlation heatmap
+            corr_period_options = {
+                "1 час": "h", "1 день": "D", "3 дня": "3D", "1 неделя": "W", 
+                "1 месяц": "MS", "3 месяца": "3MS", "1 год": "YS"
+            }
+            selected_corr_period_label = st.radio(
+                "Период расчета доходности для корреляции:", 
+                options=corr_period_options.keys(), 
+                index=3, # Default to 1 неделя
+                horizontal=True, 
+                key="corr_period_radio"
+            )
+            selected_corr_freq = corr_period_options[selected_corr_period_label]
+            
             try:
-                st.markdown("#### Корреляция недельных доходностей")
-                with st.spinner("Генерация матрицы корреляций..."):
-                     fig_corr = generate_correlation_heatmap(combined_df)
+                with st.spinner(f"Генерация матрицы корреляций ({selected_corr_period_label})..."):
+                     # Pass selected frequency to the plotting function
+                     fig_corr = generate_correlation_heatmap(combined_df, frequency=selected_corr_freq)
                      st.plotly_chart(fig_corr, use_container_width=True)
             except Exception as e:
                 st.error(f"Ошибка при построении матрицы корреляций: {e}")

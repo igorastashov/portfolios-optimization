@@ -545,13 +545,14 @@ def generate_normalized_plot(combined_df, days=180, stablecoin='USDCUSDT'): # De
         fig.update_layout(template="plotly_dark", title="Ошибка при генерации графика нормализованных цен")
         return fig
 
-def generate_correlation_heatmap(combined_df, start_date="2023-01-01", stablecoin='USDCUSDT'):
+def generate_correlation_heatmap(combined_df, start_date="2023-01-01", frequency='W', stablecoin='USDCUSDT'):
     """
-    Generates a Plotly heatmap of weekly return correlations.
+    Generates a Plotly heatmap of return correlations based on specified frequency.
 
     Args:
         combined_df (pd.DataFrame): DataFrame with DatetimeIndex and asset prices as columns.
         start_date (str): Start date for correlation calculation ('YYYY-MM-DD').
+        frequency (str): Pandas frequency string ('h', 'D', 'W', 'MS' etc.) for resampling returns.
         stablecoin (str): Stablecoin ticker to exclude.
 
     Returns:
@@ -580,16 +581,21 @@ def generate_correlation_heatmap(combined_df, start_date="2023-01-01", stablecoi
              print(f"Error generating correlation heatmap: Need at least 2 non-stablecoin assets.")
              return fig
 
-        # Resample to weekly, calculate pct_change
-        weekly_data = filtered_data[assets_to_correlate].resample('W').last() # Use last price of week
-        weekly_pct_change = weekly_data.pct_change().dropna(how='all')
+        # Resample to the specified frequency, calculate pct_change
+        resampled_data = filtered_data[assets_to_correlate].resample(frequency).last() # Use last price of the period
+        period_pct_change = resampled_data.pct_change().dropna(how='all')
 
-        if weekly_pct_change.empty or len(weekly_pct_change) < 2:
-            print("Error generating correlation heatmap: Not enough weekly data points after pct_change.")
+        if period_pct_change.empty or len(period_pct_change) < 2:
+            print(f"Error generating correlation heatmap: Not enough data points after resampling to '{frequency}' and pct_change.")
             return fig
 
         # Calculate correlation matrix
-        corr_matrix = weekly_pct_change.corr()
+        corr_matrix = period_pct_change.corr()
+        
+        # Map frequency code to human-readable name for title
+        freq_map = {'h': 'часовых', 'D': 'дневных', '3D': '3-дневных', 'W': 'недельных', 
+                    'MS': 'месячных', '3MS': '3-месячных', 'YS': 'годовых'}
+        freq_name = freq_map.get(frequency, frequency) # Use code if not in map
 
         # Create heatmap using Plotly Express
         fig_heatmap = px.imshow(
@@ -602,7 +608,7 @@ def generate_correlation_heatmap(combined_df, start_date="2023-01-01", stablecoi
 
         # Update layout for clarity
         fig_heatmap.update_layout(
-            title="Матрица корреляций недельных доходностей",
+            title=f"Матрица корреляций {freq_name} доходностей", # Updated title
             title_x=0.5,
             height=600, # Adjust as needed
             xaxis_showgrid=False, yaxis_showgrid=False,
