@@ -930,7 +930,11 @@ else:
         # --- Настройки Рекомендации ---
         st.subheader("Параметры")
         drl_model_names = ["A2C", "PPO", "SAC", "DDPG"]
-        selected_model_name = st.selectbox("Выберите DRL модель:", drl_model_names)
+        
+        # Remove columns and number input, keep only model selection
+        selected_model_name = st.selectbox("Выберите DRL модель:", drl_model_names, key="drl_model_select")
+        # Remove the number input for rebalancing interval
+        # reco_rebalance_interval = st.number_input(...)
 
         # --- Define DRL training assets --- #
         # !! Важно: Этот список ДОЛЖЕН точно совпадать с активами, использованными при обучении моделей !!
@@ -1064,6 +1068,9 @@ else:
                     # --- 8. Filter, Renormalize, Calculate Target Values & Display --- #
                     st.markdown("--- ")
                     st.subheader(f"Рекомендация от {selected_model_name} (для текущих активов + {STABLECOIN_ASSET})")
+                    
+                    # Remove the informational text about the rebalancing interval
+                    # st.info(f"Рекомендация основана на текущих рыночных данных. \nПланируйте следующую ребалансировку через **{reco_rebalance_interval}** дней.")
 
                     # Get current user assets (only those also in DRL training set)
                     current_user_assets_in_drl_set = set()
