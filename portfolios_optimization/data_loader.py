@@ -10,34 +10,51 @@ MODEL_PREFIX = "model_"
 
 def load_price_data():
     """
-    Load and process asset price data from CSV files
-    
+    Load and process asset price data from the combined CSV file.
+    Assumes the CSV has dates as the first column (index) and tickers as column headers.
+
     Returns:
-        pd.DataFrame: DataFrame with price data for all assets
+        pd.DataFrame: DataFrame with DatetimeIndex and price data for assets.
     """
-    # Read the combined data file
     file_path = os.path.join(DATA_DIR, "data_compare_eda.csv")
-    
+
     if os.path.exists(file_path):
-        # Read the data with dates as index
-        df = pd.read_csv(file_path, parse_dates=True, index_col=0)
-        
-        # List of tickers
-        tickers = ["BNBUSDT", "BTCUSDT", "CAKEUSDT", "ETHUSDT",
-                  "LTCUSDT", "SOLUSDT", "STRKUSDT", "TONUSDT",
-                  "USDCUSDT", "XRPUSDT", "PEPEUSDT",
-                  "HBARUSDT", "APTUSDT", "LDOUSDT", "JUPUSDT"]
-        
-        # Rename columns to match tickers
-        df.columns = tickers
-        
-        # Fill missing values and resample to hourly data
-        df = df.fillna(method='ffill').resample('h').ffill()
-        
-        return df
+        try:
+            # Read the data with dates as index
+            df = pd.read_csv(file_path, parse_dates=True, index_col=0)
+
+            # Sort by index (date)
+            df.sort_index(inplace=True)
+
+            # Remove duplicate index entries (if any), keeping the first
+            df = df[~df.index.duplicated(keep='first')]
+
+            # Optional: Clean stablecoin price (Uncomment and adapt if needed)
+            # if 'USDCUSDT' in df.columns:
+            #     close_orig = df['USDCUSDT'].copy()
+            #     df['USDCUSDT'] = np.where((df['USDCUSDT'] > 1.02) | (df['USDCUSDT'] < 0.98), 1.0, df['USDCUSDT'])
+            #     # If other OHLC columns exist and need cleaning:
+            #     # mask_changed = (df['USDCUSDT'] == 1.0) & (close_orig != 1.0)
+            #     # df.loc[mask_changed, ['relevant_open', 'relevant_high', 'relevant_low']] = 1.0
+
+            # Resample to hourly frequency and forward fill (if needed)
+            try:
+                df = df.resample('h').ffill()
+                print(f"Data resampled to hourly frequency. Shape: {df.shape}")
+            except TypeError as e:
+                print(f"Warning: Could not resample data to hourly. Check index type. Error: {e}")
+                # Proceed without resampling if it fails
+
+            return df
+
+        except KeyError as e:
+             print(f"Error reading {file_path}. Missing expected column/index? KeyError: {e}")
+             return pd.DataFrame()
+        except Exception as e:
+             print(f"Error processing {file_path}: {e}")
+             return pd.DataFrame()
     else:
-        # If the combined file doesn't exist, create a placeholder DataFrame
-        print(f"Warning: {file_path} not found. Creating placeholder data.")
+        print(f"Warning: {file_path} not found. Cannot load price data.")
         return pd.DataFrame()
 
 def load_return_data():

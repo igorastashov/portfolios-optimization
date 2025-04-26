@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
+import traceback # Ensure traceback is imported
 
 # Импорт модулей приложения
 from portfolios_optimization.data_loader import load_price_data, load_return_data, load_model_actions
@@ -21,12 +22,11 @@ from portfolios_optimization.authentication import (
     get_user_transactions
 )
 
+# <<< NEW: Import the analysis function >>>
+from portfolio_analyzer import run_portfolio_analysis
+
 # Импорт страниц приложения
-from app_pages import (
-    render_dashboard, render_portfolio_optimization, render_model_training, 
-    render_model_comparison, render_backtest, render_about, render_account_dashboard,
-    render_transactions_manager
-)
+from app_pages import render_account_dashboard, render_transactions_manager
 
 # Конфигурация страницы
 st.set_page_config(
@@ -55,6 +55,9 @@ def logout():
     st.session_state.username = None
     st.session_state.active_page = "Login"
     st.session_state.login_message = "Вы вышли из системы"
+    # Clear analysis results on logout
+    if 'analysis_results' in st.session_state: del st.session_state['analysis_results']
+    if 'analysis_figure' in st.session_state: del st.session_state['analysis_figure']
 
 # Загрузка данных для всего приложения
 @st.cache_data(ttl=3600)
@@ -100,7 +103,7 @@ if not st.session_state.logged_in:
                 if success:
                     st.session_state.logged_in = True
                     st.session_state.username = username
-                    st.session_state.active_page = "Dashboard"
+                    st.session_state.active_page = "Мой кабинет"
                     st.success(message)
                     st.rerun()
                 else:
@@ -149,26 +152,29 @@ else:
     
     # Меню навигации
     st.sidebar.header("Навигация")
-    page_options = ["Мой кабинет", "Управление активами", "Единый торговый аккаунт", "Dashboard", "Portfolio Optimization", "Model Training", "Model Comparison", "Backtest Results", "About"]
+    page_options = ["Мой кабинет", "Управление активами", "Единый торговый аккаунт", "Анализ портфеля"]
     
     # Устанавливаем индекс для radio на основе текущей активной страницы в состоянии сессии
     try:
+        # Handle case where previously active page might be removed
+        if st.session_state.active_page not in page_options:
+            st.session_state.active_page = page_options[0] # Default to first available
         current_page_index = page_options.index(st.session_state.active_page)
     except ValueError:
-        current_page_index = 0 # По умолчанию первая страница, если значение некорректно
+        current_page_index = 0 # По умолчанию первая страница
         st.session_state.active_page = page_options[0]
 
     selected_page = st.sidebar.radio(
         "Выберите раздел",
         page_options,
-        index=current_page_index, # Инициализируем radio текущей страницей из session_state
-        key="main_nav_radio" # Добавляем ключ для стабильности
+        index=current_page_index,
+        key="main_nav_radio"
     )
     
     # Обновляем состояние сессии, ТОЛЬКО если пользователь выбрал ДРУГУЮ страницу в radio
     if selected_page != st.session_state.active_page:
         st.session_state.active_page = selected_page
-        st.rerun() # Перезапускаем, чтобы обновить страницу немедленно
+        st.rerun()
 
     # Страница личного кабинета пользователя
     if st.session_state.active_page == "Мой кабинет":
@@ -662,6 +668,162 @@ else:
                 fig.update_xaxes(title_text="Дата", row=3, col=1)
 
                 st.plotly_chart(fig, use_container_width=True)
+
+    # Страница управления активами и транзакциями
+    elif st.session_state.active_page == "Управление активами":
+        render_transactions_manager(st.session_state.username, price_data, assets)
+    
+    # Подключение страниц из app_pages.py
+    elif st.session_state.active_page == "Анализ портфеля":
+        st.header("Анализ эффективности портфеля")
+        st.markdown("Здесь вы можете проанализировать, как бы изменилась стоимость вашего портфеля, \\n        если бы вы следовали различным инвестиционным стратегиям, основанным на вашей истории транзакций.")
+
+        # --- Настройки Анализа --- 
+        st.subheader("Параметры анализа")
+        # Определяем даты по умолчанию
+        today_date = datetime.now().date()
+        default_start_date = today_date - timedelta(days=180)
+
+        col1, col2 = st.columns(2)
+        with col1:
+             start_date = st.date_input("Начальная дата анализа", value=default_start_date, max_value=today_date - timedelta(days=1))
+             commission_input = st.number_input("Комиссия за ребалансировку (%)", min_value=0.0, max_value=5.0, value=0.1, step=0.01, format="%.3f")
+             rebalance_interval = st.number_input("Интервал ребалансировки (дни)", min_value=1, value=20, step=1)
+        with col2:
+             end_date = st.date_input("Конечная дата анализа", value=today_date, min_value=start_date + timedelta(days=1))
+             bank_apr_input = st.number_input("Годовая ставка банка (%)", min_value=0.0, max_value=100.0, value=20.0, step=0.5, format="%.1f")
+             drl_rebalance_interval = st.number_input("Интервал ребалансировки DRL (дни)", min_value=1, value=20, step=1)
+        
+        # Конвертация процентов в доли
+        commission_rate_analysis = commission_input / 100.0
+        bank_apr_analysis = bank_apr_input / 100.0
+
+        # --- Пути к данным и моделям (ВАЖНО: Настроить под ваше окружение) --- 
+        # Эти пути должны быть доступны из места запуска Streamlit
+        # Лучше использовать относительные пути от корня проекта или абсолютные пути
+        # Пример: использовать os.path.dirname(__file__) для относительных путей 
+        # ИЛИ передавать через переменные окружения / конфигурационный файл
+        # *** Настройте эти пути! ***
+        data_path_analysis = "data" # Пример: папка data в корне проекта
+        drl_models_dir_analysis = "notebooks/trained_models" # Пример: папка моделей
+        st.caption(f"Путь к данным: {os.path.abspath(data_path_analysis)}, Путь к моделям: {os.path.abspath(drl_models_dir_analysis)}")
+
+        # --- Получение данных пользователя --- 
+        user_transactions_raw = get_user_transactions(st.session_state.username)
+
+        if not user_transactions_raw:
+             st.warning("История транзакций не найдена. Пожалуйста, добавьте транзакции в разделе 'Управление активами'.")
+        else:
+             # --- Подготовка данных транзакций --- 
+             try:
+                  transactions_df_analysis = pd.DataFrame(user_transactions_raw)
+
+                  # --- START ADDED/MODIFIED CODE ---
+                  # Ensure necessary columns are numeric BEFORE calculating total_cost
+                  transactions_df_analysis['quantity'] = pd.to_numeric(transactions_df_analysis['quantity'], errors='coerce')
+                  transactions_df_analysis['price'] = pd.to_numeric(transactions_df_analysis['price'], errors='coerce')
+                  if 'fee' in transactions_df_analysis.columns:
+                       transactions_df_analysis['fee'] = pd.to_numeric(transactions_df_analysis.get('fee', 0), errors='coerce')
+                  else:
+                       transactions_df_analysis['fee'] = 0 # Add fee column with 0 if it doesn't exist
+                  # Use assignment instead of inplace on slice
+                  transactions_df_analysis['fee'] = transactions_df_analysis['fee'].fillna(0)
+                  # Calculate total_cost if missing
+                  if 'total_cost' not in transactions_df_analysis.columns:
+                      transactions_df_analysis['total_cost'] = (transactions_df_analysis['quantity'] * transactions_df_analysis['price']) + transactions_df_analysis['fee']
+                      # Handle potential NaNs from calculation (if quantity or price were NaN)
+                      transactions_df_analysis['total_cost'] = transactions_df_analysis['total_cost'].fillna(0)
+                  else:
+                       # Ensure existing total_cost is numeric and handle NaNs
+                       transactions_df_analysis['total_cost'] = pd.to_numeric(transactions_df_analysis['total_cost'], errors='coerce')
+                       # Use assignment instead of inplace on slice
+                       transactions_df_analysis['total_cost'] = transactions_df_analysis['total_cost'].fillna(0)
+                  # Ensure fee is handled (copied from calculation block for consistency)
+                  if 'fee' not in transactions_df_analysis.columns:
+                       transactions_df_analysis['fee'] = 0
+                  transactions_df_analysis['fee'] = pd.to_numeric(transactions_df_analysis.get('fee', 0), errors='coerce')
+                  # Use assignment instead of inplace on slice
+                  transactions_df_analysis['fee'] = transactions_df_analysis['fee'].fillna(0)
+                  # --- END ADDED/MODIFIED CODE ---
+
+                  # Переименование колонок под формат run_portfolio_analysis
+                  rename_map = {
+                       "date": "Дата_Транзакции",
+                       "asset": "Актив",
+                       "type": "Тип",
+                       "quantity": "Количество",
+                       "total_cost": "Общая стоимость"
+                  }
+                  # Проверяем наличие необходимых колонок (ключей из rename_map) в DataFrame
+                  required_cols = list(rename_map.keys())
+                  missing_cols = [col for col in required_cols if col not in transactions_df_analysis.columns]
+                  if missing_cols:
+                      st.error(f"Ошибка: Не все необходимые колонки найдены в истории транзакций пользователя. Отсутствуют: {missing_cols}")
+                  else:
+                     # Выбираем только нужные колонки ПЕРЕД переименованием
+                     transactions_df_analysis = transactions_df_analysis[required_cols].rename(columns=rename_map)
+
+                     # --- START ADDED CODE ---
+                     # Преобразуем значения в колонке 'Тип'
+                     type_value_map = {'buy': 'Покупка', 'sell': 'Продажа'}
+                     # Используем .get для безопасного маппинга, оставляя другие значения без изменений
+                     transactions_df_analysis['Тип'] = transactions_df_analysis['Тип'].map(lambda x: type_value_map.get(x, x))
+                     # --- END ADDED CODE ---
+
+                     # Преобразование типов на всякий случай
+                     transactions_df_analysis['Дата_Транзакции'] = pd.to_datetime(transactions_df_analysis['Дата_Транзакции'], errors='coerce')
+                     transactions_df_analysis['Количество'] = pd.to_numeric(transactions_df_analysis['Количество'], errors='coerce')
+                     # Общая стоимость может быть NaN для продаж, это нормально
+                     transactions_df_analysis['Общая стоимость'] = pd.to_numeric(transactions_df_analysis['Общая стоимость'].astype(str).str.replace(',', '', regex=False).str.replace('$', '', regex=False), errors='coerce')
+                     
+                     transactions_df_analysis.dropna(subset=['Дата_Транзакции', 'Актив', 'Тип'], inplace=True)
+                     # Проверка на наличие валидных транзакций после обработки
+                     if transactions_df_analysis.empty:
+                          st.warning("Не найдено валидных транзакций после обработки. Проверьте формат данных в истории.")
+                     else:
+                          st.dataframe(transactions_df_analysis.head(), use_container_width=True)
+
+                          # --- Кнопка Запуска --- 
+                          if st.button("🚀 Запустить анализ портфеля", use_container_width=True):
+                              with st.spinner("Выполняется анализ... Это может занять некоторое время."):
+                                  try:
+                                     results_df, fig = run_portfolio_analysis(
+                                         transactions_df=transactions_df_analysis,
+                                         start_date_str=start_date.strftime('%Y-%m-%d'),
+                                         end_date_str=end_date.strftime('%Y-%m-%d'),
+                                         data_path=data_path_analysis,
+                                         drl_models_dir=drl_models_dir_analysis,
+                                         bank_apr=bank_apr_analysis,
+                                         commission_rate=commission_rate_analysis,
+                                         rebalance_interval_days=rebalance_interval,
+                                         drl_rebalance_interval_days=drl_rebalance_interval
+                                     )
+                                     # Сохраняем результаты в session_state для отображения
+                                     if results_df is not None and fig is not None:
+                                          st.session_state.analysis_results = results_df
+                                          st.session_state.analysis_figure = fig
+                                          st.success("Анализ успешно завершен!")
+                                     else:
+                                          st.error("Ошибка во время анализа. Проверьте консоль для деталей.")
+                                          if 'analysis_results' in st.session_state: del st.session_state['analysis_results']
+                                          if 'analysis_figure' in st.session_state: del st.session_state['analysis_figure']
+                                  except Exception as e:
+                                      st.error(f"Произошла непредвиденная ошибка: {e}")
+                                      traceback.print_exc()
+                                      if 'analysis_results' in st.session_state: del st.session_state['analysis_results']
+                                      if 'analysis_figure' in st.session_state: del st.session_state['analysis_figure']
+             except Exception as e:
+                 st.error(f"Ошибка при подготовке данных транзакций: {e}")
+                 traceback.print_exc()
+
+        # --- Отображение Результатов --- 
+        if 'analysis_results' in st.session_state and st.session_state.analysis_results is not None:
+             st.subheader("Результаты анализа")
+             st.dataframe(st.session_state.analysis_results, use_container_width=True)
+        
+        if 'analysis_figure' in st.session_state and st.session_state.analysis_figure is not None:
+             st.subheader("График сравнения стратегий")
+             st.pyplot(st.session_state.analysis_figure)
 
     # Страница управления активами и транзакциями
     elif st.session_state.active_page == "Управление активами":

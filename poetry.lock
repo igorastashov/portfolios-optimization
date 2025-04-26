@@ -5504,6 +5504,21 @@ mpmath = ">=1.1.0,<1.4"
 dev = ["hypothesis (>=6.70.0)", "pytest (>=7.1.0)"]
 
 [[package]]
+name = "ta"
+version = "0.10.2"
+description = "Technical Analysis Library in Python"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "ta-0.10.2.tar.gz", hash = "sha256:e8d193dadd44d88e3c4118dc5224e2fcdc0235caba3efa758aa7a875ffba2faa"},
+]
+
+[package.dependencies]
+numpy = "*"
+pandas = "*"
+
+[[package]]
 name = "tenacity"
 version = "9.1.2"
 description = "Retry code until it succeeds"
@@ -6381,4 +6396,4 @@ repair = ["scipy (>=1.6.3)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.14"
-content-hash = "5b1537b2f5630f0501742b55bb7716a356a57e999279ecdbe8284c05f44c2bec"
+content-hash = "02e331a64db05ceded9eba62949a356ec497128b0a4a2680bf7f2999d775ab26"

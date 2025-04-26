@@ -21,7 +21,8 @@ dependencies = [
     "seaborn (==0.13.2)",
     "finrl @ git+https://github.com/AI4Finance-Foundation/FinRL.git",
     "pandas-market-calendars (>=5.0.0,<6.0.0)",
-    "streamlit (>=1.44.1,<2.0.0)"
+    "streamlit (>=1.44.1,<2.0.0)",
+   "ta (==0.10.2)"
 ]
 
 
