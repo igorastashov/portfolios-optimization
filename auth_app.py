@@ -12,7 +12,16 @@ import traceback # Ensure traceback is imported
 import json # For holdings display
 
 # Импорт модулей приложения
-from portfolios_optimization.data_loader import load_price_data, load_return_data, load_model_actions
+from portfolios_optimization.data_loader import (
+    load_price_data,
+    load_return_data,
+    load_model_actions,
+    update_all_asset_data, # New
+    create_combined_data,  # New
+    generate_normalized_plot, # New
+    generate_correlation_heatmap, # New
+    generate_single_asset_plot # New
+)
 from portfolios_optimization.portfolio_optimizer import optimize_markowitz_portfolio
 from portfolios_optimization.portfolio_analysis import calculate_metrics, plot_efficient_frontier
 from portfolios_optimization.visualization import plot_portfolio_performance, plot_asset_allocation
@@ -51,6 +60,31 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# <<< Add the missing function definition here >>>
+# Function to load combined data with caching
+# Use a parameter that changes upon update to invalidate cache
+@st.cache_data
+def load_combined_data_cached(update_trigger):
+    """Loads combined data from CSV, using update_trigger for cache invalidation."""
+    print(f"Cache Trigger: {update_trigger}. Loading combined data...") # Debug print
+    combined_data_path = os.path.join("data", "data_compare_eda.csv")
+    if os.path.exists(combined_data_path):
+        try:
+            combined_df = pd.read_csv(combined_data_path, index_col=0, parse_dates=True)
+            # Ensure index is DatetimeIndex
+            if not isinstance(combined_df.index, pd.DatetimeIndex):
+                 combined_df.index = pd.to_datetime(combined_df.index, errors='coerce')
+                 combined_df = combined_df.dropna(axis=0, subset=[combined_df.index.name]) # Drop rows if date parse failed
+            combined_df.sort_index(inplace=True)
+            print(f"Loaded {combined_data_path}, shape: {combined_df.shape}")
+            return combined_df
+        except Exception as e:
+            st.error(f"Ошибка при загрузке {combined_data_path}: {e}")
+            return pd.DataFrame()
+    else:
+        st.warning(f"Файл {combined_data_path} не найден.")
+        return pd.DataFrame()
 
 # Инициализация файла пользователей
 initialize_users_file()
@@ -168,7 +202,7 @@ else:
     
     # Меню навигации
     st.sidebar.header("Навигация")
-    page_options = ["Мой кабинет", "Управление активами", "Единый торговый аккаунт", "Анализ портфеля", "Рекомендации"]
+    page_options = ["Мой кабинет", "Данные и Анализ", "Управление активами", "Единый торговый аккаунт", "Анализ портфеля", "Рекомендации"]
     
     # Устанавливаем индекс для radio на основе текущей активной страницы в состоянии сессии
     try:
@@ -1068,6 +1102,140 @@ else:
                     st.error(f"Произошла ошибка при генерации рекомендации: {e}")
                     traceback.print_exc()
         pass # End of Recommendations page block
+
+    # <<< Add block for the new Data & Analysis page >>>
+    elif st.session_state.active_page == "Данные и Анализ":
+        st.header("Управление данными и Анализ рынка")
+        st.markdown("Здесь вы можете обновить исторические данные активов с Binance и просмотреть базовый анализ рынка.")
+
+        # --- Обновление данных --- #
+        st.subheader("Обновление данных активов")
+        st.warning("**Внимание:** Для обновления данных с Binance необходимо настроить API ключи в секретах Streamlit или переменных окружения (`BINANCE_API_KEY`, `BINANCE_API_SECRET`).")
+
+        # Initialize update status if not present
+        if 'last_update_status' not in st.session_state:
+            st.session_state.last_update_status = None
+        if 'last_update_time' not in st.session_state:
+            st.session_state.last_update_time = None
+        if 'update_counter' not in st.session_state: # For cache invalidation
+            st.session_state.update_counter = 0
+
+        col1_update, col2_update = st.columns([3, 1])
+        with col1_update:
+            # Rename the button
+            if st.button("🔄 Обновить рыночные данные", use_container_width=True):
+                st.session_state.last_update_status = None # Reset status
+                st.session_state.last_update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                progress_bar = st.progress(0, text="Запуск обновления...")
+                try:
+                    success_update, message_update = update_all_asset_data(progress_bar=progress_bar)
+                    st.session_state.last_update_status = message_update
+                    if success_update:
+                        progress_bar.progress(1.0, text="Обновление файлов завершено. Создание объединенного файла...")
+                        # If update was successful, recreate combined file
+                        success_combine, message_combine = create_combined_data()
+                        if success_combine:
+                            st.session_state.last_update_status += f" {message_combine}"
+                            st.session_state.update_counter += 1 # Increment counter to invalidate cache
+                            st.success(f"Обновление успешно завершено! {message_combine}")
+                            st.rerun() # Rerun to reload data with new trigger
+                        else:
+                            st.session_state.last_update_status += f" Ошибка объединения: {message_combine}"
+                            st.error(f"Файлы обновлены, но не удалось создать объединенный файл: {message_combine}")
+                    else:
+                        st.error(f"Ошибка при обновлении CSV файлов: {message_update}")
+                    progress_bar.empty() # Remove progress bar
+                except Exception as e:
+                    st.error(f"Непредвиденная ошибка во время обновления: {e}")
+                    traceback.print_exc()
+                    st.session_state.last_update_status = f"Критическая ошибка: {e}"
+                    progress_bar.empty()
+
+        # Display last update status
+        if st.session_state.last_update_status:
+             st.info(f"Статус последнего обновления ({st.session_state.last_update_time}): {st.session_state.last_update_status}")
+
+        st.markdown("--- ")
+        st.subheader("Анализ рынка")
+
+        # Load data using the cached function with the trigger
+        # Display loading spinner while data is loading via cache
+        with st.spinner("Загрузка агрегированных данных..."):
+             combined_df = load_combined_data_cached(st.session_state.update_counter)
+
+        if not combined_df.empty:
+            st.dataframe(combined_df.tail()) # Show recent combined data tail
+
+            # --- Normalized Plot Section ---
+            st.markdown("#### Нормализованная динамика цен")
+            # Add period selection for normalized plot
+            norm_period_options = {"7 дней": 7, "30 дней": 30, "90 дней": 90, "180 дней": 180, "Все время": None}
+            selected_norm_period_label = st.radio(
+                "Период для нормализации:", 
+                options=norm_period_options.keys(), 
+                index=3, # Default to 180 days
+                horizontal=True, 
+                key="norm_period_radio"
+            )
+            selected_norm_days = norm_period_options[selected_norm_period_label]
+
+            try:
+                with st.spinner("Генерация нормализованного графика..."):
+                     # Pass selected days to the plotting function
+                     fig_norm = generate_normalized_plot(combined_df, days=selected_norm_days)
+                     st.plotly_chart(fig_norm, use_container_width=True)
+            except Exception as e:
+                st.error(f"Ошибка при построении графика нормализованных цен: {e}")
+
+            # --- Correlation Heatmap Section ---
+            try:
+                st.markdown("#### Корреляция недельных доходностей")
+                with st.spinner("Генерация матрицы корреляций..."):
+                     fig_corr = generate_correlation_heatmap(combined_df)
+                     st.plotly_chart(fig_corr, use_container_width=True)
+            except Exception as e:
+                st.error(f"Ошибка при построении матрицы корреляций: {e}")
+
+            # --- NEW: Single Asset Plot Section --- 
+            st.markdown("--- ")
+            st.subheader("График цены актива")
+
+            if not combined_df.empty:
+                # Get available assets from combined_df columns
+                available_assets = combined_df.columns.tolist()
+
+                col1_asset, col2_res = st.columns([2,3])
+                with col1_asset:
+                    selected_asset = st.selectbox("Выберите актив:", available_assets, key="single_asset_select")
+                with col2_res:
+                    resolution_options = {"1 час": "h", "4 часа": "4h", "1 день": "D", "1 неделя": "W", "1 месяц": "MS"}
+                    selected_resolution_label = st.radio("Таймфрейм:", 
+                                                       options=resolution_options.keys(), 
+                                                       index=0, # Default to 1h
+                                                       horizontal=True, 
+                                                       key="resolution_radio"
+                                                    )
+                    selected_resolution_code = resolution_options[selected_resolution_label]
+                
+                # Generate and display the single asset plot
+                if selected_asset:
+                    try:
+                         with st.spinner(f"Генерация графика {selected_asset} ({selected_resolution_label})..."):
+                              # Import the new function if not already imported at the top
+                              from portfolios_optimization.data_loader import generate_single_asset_plot 
+                              
+                              # Call the function to generate the plot
+                              fig_single = generate_single_asset_plot(combined_df, selected_asset, selected_resolution_code)
+                              st.plotly_chart(fig_single, use_container_width=True)
+                              # Remove the placeholder info message
+                              # st.info(f"Логика для графика {selected_asset} с таймфреймом {selected_resolution_label} будет добавлена.") 
+                    except Exception as e:
+                         st.error(f"Ошибка при построении графика для {selected_asset}: {e}")
+                         traceback.print_exc() # Print detailed error in console
+
+        else:
+             st.warning(f"Не удалось загрузить данные из 'data/data_compare_eda.csv'. Запустите обновление данных.")
+        pass # End of Data & Analysis page block
 
 
 '''
