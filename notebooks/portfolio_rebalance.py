@@ -11,6 +11,7 @@ from gymnasium import spaces
 from gymnasium.utils import seeding
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3 import A2C, PPO, SAC, DDPG
+import json
 
 # --- FinRL/DRL Components (Copy or Import) ---
 # Placeholder for INDICATORS (copy from finrl.config or define)
@@ -363,29 +364,48 @@ drl_model_paths = {
 }
 
 # --- Шаг 1: Загрузка данных о портфеле ---
-# --- REVERTED to original portfolio ---
-print("--- Начальные Условия (Оригинальный портфель) ---")
+print("--- Начальные Условия (Портфель Транзакций) ---")
+# --- ПРИМЕР СТРУКТУРЫ: Замените реальными данными ---
+# Необходимо добавить столбец 'Тип' ('Покупка'/'Продажа') и 'Количество'.
+# 'Общая стоимость' используется для Покупок. Для Продаж выручка будет рассчитана.
 portfolio_data = {
-    "ID": [3, 2, 1, 0],
-    "Дата": ["2025-01-12T14:29:48.000", "2025-02-09T14:21:24.000", "2025-03-05T14:21:17.000", "2025-04-01T14:21:01.000"],
-    "Актив": ["HBARUSDT", "LTCUSDT", "BTCUSDT", "BNBUSDT"],
-    "Общая стоимость": [1000.00, 500.00, 1000.00, 1000.00]
+    "ID": [3, 2, 1, 0, 4], # Добавлен ID для примера продажи
+    "Дата_Транзакции": ["2025-01-12T14:29:48.000", "2025-02-09T14:21:24.000", "2025-03-05T14:21:17.000", "2025-04-01T14:21:01.000", "2025-04-10T10:00:00.000"], # Переименовано, добавлена дата продажи
+    "Актив": ["HBARUSDT", "LTCUSDT", "BTCUSDT", "BNBUSDT", "LTCUSDT"], # Актив для продажи
+    "Тип": ['Покупка', 'Покупка', 'Покупка', 'Покупка', 'Продажа'], # Новый столбец
+    "Количество": [np.nan, np.nan, np.nan, np.nan, 2.0], # Новый столбец, NaN для покупок (будет рассчитано), указано для продажи
+    "Общая стоимость": [1000.00, 500.00, 1000.00, 1000.00, np.nan] # NaN для продажи
 }
+# --- Конец Примера ---
+
 portfolio_df = pd.DataFrame(portfolio_data)
-portfolio_df['Дата'] = pd.to_datetime(portfolio_df['Дата'])
-portfolio_df = portfolio_df.sort_values(by='Дата').reset_index(drop=True)
+portfolio_df['Дата_Транзакции'] = pd.to_datetime(portfolio_df['Дата_Транзакции'])
+portfolio_df = portfolio_df.sort_values(by='Дата_Транзакции').reset_index(drop=True)
 
-ORIGINAL_PORTFOLIO_ASSETS = portfolio_df['Актив'].unique().tolist()
-# Assets the DRL model was trained on and outputs weights for
-DRL_TRAINING_ASSETS = ['APTUSDT', 'CAKEUSDT', 'HBARUSDT', 'JUPUSDT', 'PEPEUSDT', 'STRKUSDT', 'USDCUSDT']
-# Combine all assets needed for data loading
-ALL_REQUIRED_ASSETS_FOR_LOADING = list(set(ORIGINAL_PORTFOLIO_ASSETS + DRL_TRAINING_ASSETS + [STABLECOIN_ASSET]))
+# Проверка наличия необходимых столбцов
+required_cols = ['Дата_Транзакции', 'Актив', 'Тип', 'Количество', 'Общая стоимость']
+if not all(col in portfolio_df.columns for col in required_cols):
+    missing = [col for col in required_cols if col not in portfolio_df.columns]
+    print(f"ОШИБКА: В данных портфеля отсутствуют необходимые столбцы: {missing}. Ожидаются: {required_cols}")
+    exit()
 
-print("Начальный портфель:")
-print(portfolio_df[['ID', 'Дата', 'Актив', 'Общая стоимость']])
+# Валидация типов транзакций
+valid_types = ['Покупка', 'Продажа']
+if not portfolio_df['Тип'].isin(valid_types).all():
+    invalid = portfolio_df[~portfolio_df['Тип'].isin(valid_types)]['Тип'].unique()
+    print(f"ОШИБКА: Найдены неверные типы транзакций: {invalid}. Допустимые типы: {valid_types}")
+    exit()
+
+# Определение активов для загрузки
+ALL_PORTFOLIO_ASSETS = portfolio_df['Актив'].unique().tolist()
+DRL_TRAINING_ASSETS = ['APTUSDT', 'CAKEUSDT', 'HBARUSDT', 'JUPUSDT', 'PEPEUSDT', 'STRKUSDT', 'USDCUSDT'] # Оставляем как есть
+ALL_REQUIRED_ASSETS_FOR_LOADING = list(set(ALL_PORTFOLIO_ASSETS + DRL_TRAINING_ASSETS + [STABLECOIN_ASSET]))
+
+print("Портфель транзакций (начальные данные):")
+print(portfolio_df)
 print(f"Комиссия за ребалансировку (Стратегия 2): {commission_rate*100:.3f}%")
 print(f"Годовая ставка банка (Стратегия 4): {bank_apr*100:.2f}%")
-print(f"DRL Модель: {drl_model_path}")
+# print(f"DRL Модель: {drl_model_path}") # DRL модель теперь загружается позже
 print(f"Активы DRL модели (для предсказания): {DRL_TRAINING_ASSETS}")
 
 
@@ -502,7 +522,7 @@ for asset in ALL_REQUIRED_ASSETS_FOR_LOADING:
         all_data_frames.append(df_processed)
     else:
         # Check if the missing asset is crucial
-        if asset in ORIGINAL_PORTFOLIO_ASSETS or asset in DRL_TRAINING_ASSETS:
+        if asset in ALL_PORTFOLIO_ASSETS or asset in DRL_TRAINING_ASSETS:
              print(f"  -> КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ: Не удалось загрузить данные для {asset}. Стратегии, использующие его, могут быть неточными.")
              missing_essential_assets.append(asset)
         elif asset == STABLECOIN_ASSET:
@@ -511,8 +531,8 @@ for asset in ALL_REQUIRED_ASSETS_FOR_LOADING:
 
 if not all_data_frames: print("ОШИБКА: Нет данных для анализа!"); exit()
 # Check if critical portfolio assets are missing
-if any(asset in missing_essential_assets for asset in ORIGINAL_PORTFOLIO_ASSETS):
-     print("ОШИБКА: Отсутствуют данные для одного или нескольких активов из начального портфеля. Невозможно продолжить.")
+if any(asset in missing_essential_assets for asset in ALL_PORTFOLIO_ASSETS):
+     print("ОШИБКА: Отсутствуют данные для одного или нескольких активов из портфеля транзакций. Невозможно продолжить.")
      exit()
 # Check if critical DRL assets are missing (needed for prediction)
 if any(asset in missing_essential_assets for asset in DRL_TRAINING_ASSETS):
@@ -592,55 +612,75 @@ stablecoin_price_col = f'{STABLECOIN_ASSET}_Price'
 has_stablecoin_data = stablecoin_price_col in historical_prices_pivot.columns and not historical_prices_pivot[stablecoin_price_col].isnull().all()
 
 
-# --- Поиск Цен Покупки (Use Pivot Table) ---
-print("\nПоиск цен на момент покупки...")
+# --- Поиск Цен Транзакций и Расчет Количества ---
+print("\nПоиск цен на момент транзакций и расчет количества...")
 rows_to_drop = []
-portfolio_df['Actual_Purchase_Time_Index'] = pd.NaT
-portfolio_df['Purchase_Price_Actual'] = np.nan
+portfolio_df['Actual_Transaction_Time_Index'] = pd.NaT # Переименовано
+portfolio_df['Transaction_Price_Actual'] = np.nan # Переименовано
 
 for index, row in portfolio_df.iterrows():
     asset = row['Актив']
-    purchase_date = row['Дата']
+    transaction_date = row['Дата_Транзакции']
     price_col = f'{asset}_Price'
+    trans_type = row['Тип']
 
     if price_col not in historical_prices_pivot.columns:
-        print(f"  Предупреждение: Нет данных цен для {asset} ({price_col}) в сводной таблице. Покупка ID {row.get('ID', index)} будет удалена.")
+        print(f"  Предупреждение: Нет данных цен для {asset} ({price_col}) в сводной таблице. Транзакция ID {row.get('ID', index)} будет удалена.")
         rows_to_drop.append(index)
         continue
 
-    # Find the first available timestamp in the index >= purchase_date
-    relevant_times = historical_prices_pivot.index[historical_prices_pivot.index >= purchase_date]
+    # Find the first available timestamp in the index >= transaction_date
+    relevant_times = historical_prices_pivot.index[historical_prices_pivot.index >= transaction_date]
 
     if not relevant_times.empty:
-        actual_purchase_time_index = relevant_times[0]
-        # Check if the found time actually exists in the index (should always be true here)
-        if actual_purchase_time_index in historical_prices_pivot.index:
-             purchase_price = historical_prices_pivot.loc[actual_purchase_time_index, price_col]
-             if pd.notna(purchase_price) and purchase_price > 0:
-                 portfolio_df.loc[index, 'Purchase_Price_Actual'] = purchase_price
-                 portfolio_df.loc[index, 'Actual_Purchase_Time_Index'] = actual_purchase_time_index
+        actual_transaction_time_index = relevant_times[0]
+        # Check if the found time actually exists in the index
+        if actual_transaction_time_index in historical_prices_pivot.index:
+             transaction_price = historical_prices_pivot.loc[actual_transaction_time_index, price_col]
+             if pd.notna(transaction_price) and transaction_price > 0:
+                 portfolio_df.loc[index, 'Transaction_Price_Actual'] = transaction_price
+                 portfolio_df.loc[index, 'Actual_Transaction_Time_Index'] = actual_transaction_time_index
+
+                 # Рассчитать количество для покупок, если не указано
+                 if trans_type == 'Покупка' and pd.isna(row['Количество']):
+                     if pd.notna(row['Общая стоимость']) and row['Общая стоимость'] > 0:
+                         portfolio_df.loc[index, 'Количество'] = row['Общая стоимость'] / transaction_price
+                     else:
+                         print(f"  Предупреждение: Невозможно рассчитать Количество для Покупки {asset} (ID {row.get('ID', index)}): не указана Общая стоимость > 0. Транзакция будет удалена.")
+                         rows_to_drop.append(index)
+                 # Проверить наличие количества для продаж
+                 elif trans_type == 'Продажа' and pd.isna(row['Количество']):
+                      print(f"  Предупреждение: Не указано Количество для Продажи {asset} (ID {row.get('ID', index)}). Транзакция будет удалена.")
+                      rows_to_drop.append(index)
+
              else:
-                 print(f"  Предупреждение: Не найдена валидная цена (>0) для {asset} (ID {row.get('ID', index)}) в {actual_purchase_time_index}. Покупка будет удалена.")
+                 print(f"  Предупреждение: Не найдена валидная цена (>0) для {asset} (ID {row.get('ID', index)}) в {actual_transaction_time_index}. Транзакция будет удалена.")
                  rows_to_drop.append(index)
         else:
-             # This case should theoretically not happen if relevant_times is not empty
-             print(f"  Логическая ошибка: Время {actual_purchase_time_index} не найдено в индексе для {asset}. Покупка будет удалена.")
+             print(f"  Логическая ошибка: Время {actual_transaction_time_index} не найдено в индексе для {asset}. Транзакция будет удалена.")
              rows_to_drop.append(index)
     else:
-        print(f"  Предупреждение: Нет данных в истории после даты покупки {purchase_date} для {asset} (ID {row.get('ID', index)}). Покупка будет удалена.")
+        print(f"  Предупреждение: Нет данных в истории после даты транзакции {transaction_date} для {asset} (ID {row.get('ID', index)}). Транзакция будет удалена.")
         rows_to_drop.append(index)
 
 if rows_to_drop:
-    print(f"  Удаление {len(rows_to_drop)} покупок из-за отсутствия цен...")
+    print(f"  Удаление {len(rows_to_drop)} транзакций из-за ошибок/отсутствия данных...")
     portfolio_df.drop(rows_to_drop, inplace=True)
     portfolio_df.reset_index(drop=True, inplace=True)
 
-print(f"Поиск цен завершен. Учтено покупок: {len(portfolio_df)}.")
-if len(portfolio_df) == 0: print("\nОШИБКА: Нет покупок для анализа после проверки цен!"); exit()
+# Дополнительная проверка: у всех транзакций должно быть валидное количество
+portfolio_df.dropna(subset=['Количество'], inplace=True) # Удаляем строки, где количество все еще NaN
+portfolio_df = portfolio_df[portfolio_df['Количество'] > 0] # Удаляем строки с нулевым или отрицательным количеством
+portfolio_df.reset_index(drop=True, inplace=True)
 
-first_investment_time = portfolio_df['Actual_Purchase_Time_Index'].min()
-if pd.isna(first_investment_time): print("ОШИБКА: Не удалось определить время первой покупки!"); exit()
-print(f"Первая фактическая инвестиция учтена в: {first_investment_time}")
+
+print(f"Обработка транзакций завершена. Учтено транзакций: {len(portfolio_df)}.")
+if len(portfolio_df) == 0: print("\nОШИБКА: Нет транзакций для анализа после проверки цен и количества!"); exit()
+
+# Определяем время первой *инвестиции* (покупки) для начала симуляции
+first_investment_time = portfolio_df[portfolio_df['Тип'] == 'Покупка']['Actual_Transaction_Time_Index'].min()
+if pd.isna(first_investment_time): print("ОШИБКА: Не удалось определить время первой покупки для начала симуляции!"); exit()
+print(f"Первая фактическая инвестиция (покупка) учтена в: {first_investment_time}")
 
 
 # --- DRL Preprocessing & Prediction ---
@@ -794,514 +834,762 @@ if not df_actions_all_models:
 # df_actions_ddpg = df_actions_all_models.get("DDPG", pd.DataFrame())
 
 
-# --- Шаг 3: Расчет Стоимости Стратегий ---
-print("\n--- Расчет Стоимости Стратегий (Оригинальный портфель) ---")
+# --- Шаг 3: Расчет Стоимости Стратегий --- (Переписанный цикл)
+print("\n--- Расчет Стоимости Стратегий (На основе транзакций) ---")
+
 # Use the pivoted price data for calculations
 historical_data_final = historical_prices_pivot.copy()
 
-# --- Strategy 1: Buy & Hold (Original Portfolio) ---
-print("  Расчет Стратегии 1: Buy & Hold...")
-historical_data_final['Total_Value_Relative'] = 0.0
-total_relative_value = pd.Series(0.0, index=historical_data_final.index)
-for _, purchase_row in portfolio_df.iterrows():
-    asset = purchase_row['Актив']; price_col = f'{asset}_Price'
-    if price_col not in historical_data_final.columns or pd.isna(purchase_row['Purchase_Price_Actual']) or pd.isna(purchase_row['Actual_Purchase_Time_Index']): continue
-    initial_investment = purchase_row['Общая стоимость']; purchase_price = purchase_row['Purchase_Price_Actual']; purchase_time_index = purchase_row['Actual_Purchase_Time_Index']
-    if purchase_price <= 0: continue
-    price_ratio = historical_data_final[price_col] / purchase_price; investment_value = initial_investment * price_ratio
-    investment_value.loc[investment_value.index < purchase_time_index] = 0
-    total_relative_value = total_relative_value.add(investment_value, fill_value=0)
-historical_data_final['Total_Value_Relative'] = total_relative_value
-
-# --- Strategy 3: Stablecoin Only ---
-print(f"  Расчет Стратегии 3: {STABLECOIN_ASSET} Only...")
-historical_data_final['Total_Value_Stablecoin'] = np.nan
-investments_by_time = portfolio_df.groupby('Actual_Purchase_Time_Index')['Общая стоимость'].sum().to_dict()
-investment_series = pd.Series(investments_by_time)
-aligned_investments = investment_series.reindex(historical_data_final.index, fill_value=0)
-cumulative_investments = aligned_investments.cumsum()
-historical_data_final['Total_Value_Stablecoin'] = cumulative_investments
-historical_data_final.loc[historical_data_final.index < first_investment_time, 'Total_Value_Stablecoin'] = np.nan
-if has_stablecoin_data and stablecoin_price_col in historical_data_final.columns:
-    mask_invested = historical_data_final['Total_Value_Stablecoin'].notna() & (historical_data_final['Total_Value_Stablecoin'] > 0)
-    if mask_invested.any():
-        first_valid_time_invested = historical_data_final.loc[mask_invested].index.min()
-        first_usdc_price = historical_data_final.loc[first_valid_time_invested, stablecoin_price_col]
-        if pd.notna(first_usdc_price) and first_usdc_price > 0:
-             usdc_price_ratio = historical_data_final[stablecoin_price_col] / first_usdc_price
-             historical_data_final.loc[mask_invested, 'Total_Value_Stablecoin'] *= usdc_price_ratio.loc[mask_invested]
-
-# --- Strategies 2 (Rebalance), 4 (Bank), 5 (DRL) - Simulation Loop ---
-print(f"  Расчет Стратегий 2, 4, 5 (Цикл)...")
-sim_data_index = historical_data_final.index[historical_data_final.index >= first_investment_time]
+# Определяем временной диапазон для симуляции
+sim_start_time = first_investment_time
+sim_end_time = today # Конец периода - последняя доступная дата в истории
+# +++ FIX: Ensure sim_data_index covers the last transaction date if it's after first_investment_time +++
+last_transaction_time = portfolio_df['Actual_Transaction_Time_Index'].max()
+sim_end_time_actual = max(sim_end_time, last_transaction_time) if not pd.isna(last_transaction_time) else sim_end_time
+# --- End FIX ---
+sim_data_index = historical_data_final.index[(historical_data_final.index >= sim_start_time) & (historical_data_final.index <= sim_end_time_actual)]
+if sim_data_index.empty:
+    print(f"ОШИБКА: Не найдены исторические данные в диапазоне симуляции {sim_start_time} - {sim_end_time_actual}. Выход.")
+    exit()
 sim_data = historical_data_final.loc[sim_data_index].copy()
 
-# Initialize columns
-sim_data['Total_Value_Perfect'] = np.nan
-sim_data['Held_Asset_Perfect'] = ''
-sim_data['Total_Value_Bank'] = np.nan
-# sim_data['Total_Value_DRL_DDPG'] = np.nan # Заменено словарем ниже
+# Подготовка DataFrame для транзакций (индекс - время транзакции)
+transactions_sim = portfolio_df.set_index('Actual_Transaction_Time_Index').sort_index()
 
-# Инициализация колонок для всех DRL стратегий
+# Инициализация состояний для всех стратегий
+strategies = {
+    # Стратегия 1: Фактический Buy & Hold (с учетом продаж)
+    'Actual_Buy_Hold': {'value': 0.0, 'holdings': {}},
+    # Стратегия 2: Ребалансировка к равным долям ТЕКУЩИХ активов
+    'Rebalance_To_Equal': {'value': 0.0, 'holdings': {}, 'last_rebalance': pd.NaT, 'commission_paid': 0.0},
+    # Стратегия 3: Только стейблкоин (No holdings needed, just tracks value)
+    'Stablecoin_Only': {'value': 0.0}, # <<< MODIFIED: Removed holdings
+    # Стратегия 4: Банковский депозит (No holdings needed, just tracks value)
+    'Bank_Deposit': {'value': 0.0}, # <<< MODIFIED: Removed holdings
+      # +++ Новая стратегия: Идеальное предвидение +++
+    'Perfect_Foresight': {'value': 0.0, 'holdings': {}, 'last_rebalance': pd.NaT, 'commission_paid': 0.0},
+}
+# Добавляем DRL стратегии
 for model_name in df_actions_all_models.keys():
-    sim_data[f'Total_Value_{model_name}'] = np.nan
+    strategies[f'DRL_{model_name}'] = {'value': 0.0, 'holdings': {}, 'last_weights': {}, 'last_rebalance': pd.NaT}
 
-# State variables for Strategy 2
-current_perfect_value = 0.0
-# last_rebalance_time = pd.NaT # Old name
-last_rebalance_time_s2 = pd.NaT # Уточнено имя переменной
-held_asset_perfect_col = None
-total_commission_paid = 0.0
+# Добавление колонок для результатов в sim_data
+sim_data['Total_Invested'] = 0.0
+sim_data['Total_Withdrawn'] = 0.0
+for s_name in strategies.keys():
+    sim_data[f'Value_{s_name}'] = 0.0
+    if 'holdings' in strategies[s_name]:
+        sim_data[f'Holdings_{s_name}'] = None # Будем хранить словари как объекты
+if 'commission_paid' in strategies['Rebalance_To_Equal']:
+    sim_data['Commission_S2'] = 0.0
+    # +++ Добавляем колонку для комиссии Perfect_Foresight +++
+    sim_data['Commission_PF'] = 0.0
 
-# State variables for Strategy 4
-current_bank_value = 0.0
-hourly_rate = (1 + bank_apr)**(1 / (365.25 * 24)) - 1 if bank_apr > 0 else 0.0
+# Переменные для отслеживания общих вводов/выводов
+total_invested_overall = 0.0
+total_withdrawn_overall = 0.0
+last_recorded_invested = 0.0
+last_recorded_withdrawn = 0.0
 
-# State variables for Strategy 5 (All DRL Models)
-# Используем словари для хранения состояния каждой DRL модели
-current_drl_values = {name: 0.0 for name in df_actions_all_models.keys()}
-last_drl_weights_all = {name: {} for name in df_actions_all_models.keys()}
-last_drl_rebalance_time = pd.NaT # Одно время ребалансировки для всех DRL
+# Основной цикл симуляции
+print("Запуск симуляционного цикла...")
+for i, current_time in enumerate(sim_data.index):
+    previous_time = sim_data.index[i-1] if i > 0 else None
 
-first_step_simulation = True
+    # 1. Обновление стоимости на основе изменения цен с предыдущего шага
+    if previous_time:
+        for s_name, state in strategies.items():
+            # --- REMOVED the Stablecoin_Only block that was here ---
+            # --- It should only change based on transactions ---
+            if 'holdings' in state and state['value'] > 1e-9: # For strategies holding crypto
+                current_portfolio_value = 0.0
+                # Отфильтровываем холдинги с количеством > 0 и наличием цены
+                valid_holdings = {
+                    a: q for a, q in state['holdings'].items()
+                    if q > 1e-9 and f'{a}_Price' in sim_data.columns
+                }
+                for asset, quantity in valid_holdings.items():
+                    price_col = f'{asset}_Price'
+                    current_price = sim_data.loc[current_time, price_col]
+                    if pd.notna(current_price):
+                         current_portfolio_value += quantity * current_price
+                    else: # Если цена внезапно стала NaN, используем последнюю известную
+                         last_price = sim_data.loc[previous_time, price_col]
+                         if pd.notna(last_price):
+                              current_portfolio_value += quantity * last_price
+                         # Иначе стоимость этой части холдинга обнуляется
 
-# --- Main Simulation Loop ---
-for current_time in sim_data.index:
-    investment_added_this_step = 0.0
-    assets_in_portfolio_now = portfolio_df[portfolio_df['Actual_Purchase_Time_Index'] <= current_time]['Актив'].unique().tolist()
-    asset_price_cols_now = [f"{asset}_Price" for asset in assets_in_portfolio_now]
+                state['value'] = current_portfolio_value
+            elif s_name == 'Bank_Deposit' and state['value'] > 0:
+                hourly_rate = (1 + bank_apr)**(1 / (365.25 * 24)) - 1 if bank_apr > 0 else 0
+                state['value'] *= (1 + hourly_rate)
 
-    # Check for new investments
-    if current_time in investments_by_time:
-        added_value = investments_by_time[current_time]
-        investment_added_this_step = added_value
-        # Add to all strategies
-        current_perfect_value += added_value
-        current_bank_value += added_value
-        # current_drl_value += added_value # Старое
-        for model_name in current_drl_values:
-            current_drl_values[model_name] += added_value
+    # 2. Обработка транзакций (покупки/продажи) в текущий момент времени
+    investment_change_this_step = 0.0
+    withdrawal_this_step = 0.0
+    # Проверяем, есть ли транзакции для текущего времени
+    if current_time in transactions_sim.index:
+        # Получаем все транзакции для данного часа (может быть несколько)
+        todays_transactions = transactions_sim.loc[[current_time]] # Use [[]] to get DataFrame
+        for _, trans in todays_transactions.iterrows():
+            asset = trans['Актив']; quantity = trans['Количество']; price = trans['Transaction_Price_Actual']; trans_type = trans['Тип']
+            # Убедимся, что цена валидна
+            if pd.isna(price) or price <= 0:
+                print(f"  ПРЕДУПРЕЖДЕНИЕ ({current_time}): Пропуск транзакции ID {trans.get('ID', 'N/A')} из-за невалидной цены ({price}).")
+                continue
 
-        if pd.isna(last_rebalance_time_s2): last_rebalance_time_s2 = current_time
-        if pd.isna(last_drl_rebalance_time): last_drl_rebalance_time = current_time
+            if trans_type == 'Покупка':
+                cost = quantity * price
+                total_invested_overall += cost
+                investment_change_this_step += cost
+                # Обновляем каждую стратегию
+                for s_name, state in strategies.items():
+                    if 'holdings' in state: # Стратегии, держащие крипту
+                         state['value'] += cost # Увеличиваем стоимость на сумму покупки
+                         state['holdings'][asset] = state['holdings'].get(asset, 0) + quantity
+                    elif s_name in ['Stablecoin_Only', 'Bank_Deposit']: # Стратегии - кэш прокси
+                         state['value'] += cost # Добавляем стоимость покупки (капитал аллоцирован сюда)
+                         # if state['value'] < 0: state['value'] = 0 # Предотвращаем отрицательный баланс (this check might be redundant now)
 
-        trigger_rebalance_s2 = True
-        trigger_rebalance_drl = True
-    else:
-        trigger_rebalance_s2 = False
-        trigger_rebalance_drl = False
+            elif trans_type == 'Продажа':
+                proceeds = quantity * price
+                can_process_sale_globally = False # Флаг, что продажа вообще возможна хотя бы в одной крипто-стратегии
 
-    # --- Update Values Based on Price Changes from Previous Step ---
-    if not first_step_simulation:
-        current_loc = sim_data.index.get_loc(current_time)
-        previous_time = sim_data.index[current_loc - 1]
+                # Сначала обрабатываем продажу для крипто-стратегий
+                for s_name, state in strategies.items():
+                    if 'holdings' in state: # Только для стратегий с холдингами
+                         asset_holding = state['holdings'].get(asset, 0)
+                         # Продаем только если есть что продавать в этой стратегии
+                         if asset_holding >= quantity - 1e-9: # Сравнение с учетом погрешности
+                             can_process_sale_globally = True # Продажа возможна хотя бы в одной стратегии
+                             state['holdings'][asset] -= quantity
+                             if state['holdings'][asset] < 1e-9:
+                                 del state['holdings'][asset] # Удаляем актив, если его не осталось
+                             # Уменьшаем стоимость стратегии НА СУММУ ВЫВОДА
+                             state['value'] -= proceeds
+                             if state['value'] < 0: state['value'] = 0 # Стоимость не может быть < 0
+                         elif asset_holding > 1e-9: # Если актива недостаточно
+                              print(f"  ПРЕДУПРЕЖДЕНИЕ ({current_time}): Недостаточно {asset} ({asset_holding:.4f}) для продажи {quantity:.4f} в стратегии {s_name}. Продажа для этой стратегии пропущена.")
+                         # Если актива вообще нет, ничего не делаем для этой стратегии
 
-        # Update Strategy 2 (Perfect Rebalance)
-        if held_asset_perfect_col and current_perfect_value > 1e-9:
-            if held_asset_perfect_col in sim_data.columns:
-                current_price = sim_data.loc[current_time, held_asset_perfect_col]
-                previous_price = sim_data.loc[previous_time, held_asset_perfect_col]
-                if pd.notna(previous_price) and previous_price > 0 and pd.notna(current_price):
-                    price_ratio_step = current_price / previous_price
-                    if 0.01 < price_ratio_step < 100: current_perfect_value *= price_ratio_step
+                # Если продажа была возможна хотя бы для одной крипто-стратегии,
+                # то деньги поступили на счета кэш-прокси стратегий
+                if can_process_sale_globally:
+                    total_withdrawn_overall += proceeds
+                    withdrawal_this_step += proceeds
+                    # Обновляем кэш-стратегии
+                    for s_name, state in strategies.items():
+                         if s_name in ['Stablecoin_Only', 'Bank_Deposit']:
+                              state['value'] += proceeds # Деньги пришли
+                else:
+                    print(f"  ПРЕДУПРЕЖДЕНИЕ ({current_time}): Продажа {quantity:.4f} {asset} невозможна ни в одной крипто-стратегии. Вывод средств не выполнен, кэш-стратегии не обновлены.")
 
-        # Update Strategy 4 (Bank)
-        if current_bank_value > 0 and hourly_rate > 0:
-              current_bank_value *= (1 + hourly_rate)
+    # 3. Логика ребалансировки для Стратегий 2, 5 и DRL (без изменений здесь)
 
-        # Update Strategy 5 (All DRL Models)
-        for model_name, last_weights in last_drl_weights_all.items():
-            current_value = current_drl_values[model_name]
-            if last_weights and current_value > 1e-9:
-                 portfolio_return_drl = 0.0
-                 valid_weights_sum = 0.0
-                 for asset, weight in last_weights.items():
-                     price_col = f"{asset}_Price"
+    # Стратегия 2: Rebalance_To_Equal
+    s2_state = strategies['Rebalance_To_Equal']
+    perform_rebalance_s2 = False
+    # Определяем, была ли это первая инвестиция в эту стратегию на этом шаге
+    is_first_investment_step_s2 = (investment_change_this_step > 0 and (s2_state['value'] - investment_change_this_step) <= 1e-9)
+
+    if not pd.isna(s2_state['last_rebalance']):
+        if current_time - s2_state['last_rebalance'] >= pd.Timedelta(days=rebalance_interval_days):
+            perform_rebalance_s2 = True
+    elif is_first_investment_step_s2 and s2_state['value'] > 1e-9: # Ребаланс при первой инвестиции, если есть стоимость
+        s2_state['last_rebalance'] = current_time
+        perform_rebalance_s2 = True
+
+    if perform_rebalance_s2 and s2_state['value'] > 1e-6:
+        # Активы, которые есть в портфеле S2 и для которых есть цена
+        current_holdings_s2 = {
+            a: q for a, q in s2_state['holdings'].items()
+            if q > 1e-9 and f'{a}_Price' in sim_data.columns and pd.notna(sim_data.loc[current_time, f'{a}_Price'])
+        }
+        num_assets_s2 = len(current_holdings_s2)
+
+        if num_assets_s2 > 0:
+            value_before_commission = s2_state['value']
+            commission = value_before_commission * commission_rate
+            s2_state['commission_paid'] += commission # Накапливаем комиссию
+            value_to_rebalance = value_before_commission - commission
+
+            if value_to_rebalance > 1e-9:
+                target_value_per_asset = value_to_rebalance / num_assets_s2
+                new_holdings_s2 = {}
+                recalculated_value = 0
+                for asset in current_holdings_s2.keys(): # Ребалансируем только между текущими активами с ценой
+                    price_col = f'{asset}_Price'
+                    current_price = sim_data.loc[current_time, price_col]
+                    if current_price > 1e-9: # Цена должна быть > 0
+                        qty = target_value_per_asset / current_price
+                        new_holdings_s2[asset] = qty
+                        recalculated_value += qty * current_price
+                    # Если current_price <= 0, актив пропускается
+
+                s2_state['holdings'] = new_holdings_s2
+                s2_state['value'] = recalculated_value # Обновляем стоимость на основе реальных количеств
+                s2_state['last_rebalance'] = current_time
+                # sim_data.loc[current_time, 'Commission_S2'] = commission # Записываем комиссию ШАГА (можно убрать, если нужна общая)
+            else: # Если после комиссии не осталось денег
+                s2_state['holdings'] = {}
+                s2_state['value'] = 0
+                s2_state['last_rebalance'] = current_time
+                # sim_data.loc[current_time, 'Commission_S2'] = commission
+        else: # Если нет активов для ребалансировки
+             s2_state['last_rebalance'] = current_time # Сдвигаем дату, чтобы не пытаться ребалансировать пустоту
+
+    # Стратегия 5: DRL (для каждой модели)
+    for model_name in df_actions_all_models.keys():
+        s_name = f'DRL_{model_name}'
+        s_drl_state = strategies[s_name]
+        df_actions = df_actions_all_models[model_name]
+
+        perform_rebalance_drl = False
+        # Определяем, была ли первая инвестиция в эту DRL стратегию
+        is_first_investment_step_drl = (investment_change_this_step > 0 and (s_drl_state['value'] - investment_change_this_step) <= 1e-9)
+
+        if not pd.isna(s_drl_state['last_rebalance']):
+            if current_time - s_drl_state['last_rebalance'] >= pd.Timedelta(days=drl_rebalance_interval_days):
+                 perform_rebalance_drl = True
+        elif is_first_investment_step_drl and s_drl_state['value'] > 1e-9:
+             s_drl_state['last_rebalance'] = current_time
+             perform_rebalance_drl = True
+
+        # Получаем целевые веса DRL на ТЕКУЩИЙ момент (если есть предсказание)
+        target_drl_weights = {} # Веса для активов, в которые МОЖНО ребалансироваться
+        if current_time in df_actions.index and s_drl_state['value'] > 1e-9:
+             model_weights_all_assets = df_actions.loc[current_time]
+             # Активы, на которые DRL МОЖЕТ дать вес (из DRL_TRAINING_ASSETS) И для которых есть цена
+             allocatable_drl_assets = {
+                 a for a in DRL_TRAINING_ASSETS
+                 if f'{a}_Price' in sim_data.columns and pd.notna(sim_data.loc[current_time, f'{a}_Price'])
+             }
+
+             relevant_weights = {}
+             for asset in allocatable_drl_assets:
+                 if asset in model_weights_all_assets.index:
+                      weight = model_weights_all_assets[asset]
+                      relevant_weights[asset] = weight if pd.notna(weight) and weight > 1e-9 else 0.0 # Убираем NaN и <=0 веса
+                 else:
+                      relevant_weights[asset] = 0.0
+
+             # Отфильтровываем нулевые веса
+             relevant_weights = {a: w for a, w in relevant_weights.items() if w > 1e-9}
+             total_relevant_weight = sum(relevant_weights.values())
+
+             if total_relevant_weight > 1e-6:
+                 # Нормализуем веса
+                 target_drl_weights = {asset: w / total_relevant_weight for asset, w in relevant_weights.items()}
+             # else: Fallback будет ниже, если target_drl_weights остался пустым
+        # else: # Если нет предсказания DRL на эту дату или стоимость портфеля = 0, Fallback ниже
+
+        # Если целевые веса не определились (нет предсказания, нулевые веса), используем старые или fallback
+        if not target_drl_weights:
+            target_drl_weights = s_drl_state.get('last_weights', {})
+            # Дополнительный fallback, если и старых весов нет
+            if not target_drl_weights:
+                 current_portfolio_assets_drl = {a for a, q in s_drl_state['holdings'].items() if q > 1e-9}
+                 if has_stablecoin_data and STABLECOIN_ASSET in DRL_TRAINING_ASSETS:
+                     target_drl_weights = {STABLECOIN_ASSET: 1.0} # По умолчанию в стейблкоин
+                 elif current_portfolio_assets_drl: # Или поровну между текущими
+                     target_drl_weights = {asset: 1.0/len(current_portfolio_assets_drl) for asset in current_portfolio_assets_drl}
+
+
+        # Применяем ребалансировку DRL, если нужно и есть целевые веса
+        if perform_rebalance_drl and target_drl_weights and s_drl_state['value'] > 1e-9:
+            value_to_rebalance_drl = s_drl_state['value'] # Без комиссии для DRL
+            new_holdings_drl = {}
+            recalculated_value_drl = 0
+            assets_in_target = set(target_drl_weights.keys())
+
+            for asset, weight in target_drl_weights.items():
+                price_col = f'{asset}_Price'
+                # Цена должна быть доступна (проверяли при формировании allocatable_drl_assets)
+                current_price = sim_data.loc[current_time, price_col]
+                if current_price > 1e-9:
+                     qty = (value_to_rebalance_drl * weight) / current_price
+                     new_holdings_drl[asset] = qty
+                     recalculated_value_drl += qty * current_price
+                # else: Актив уже был отфильтрован ранее
+
+            s_drl_state['holdings'] = new_holdings_drl
+            s_drl_state['value'] = recalculated_value_drl
+            s_drl_state['last_rebalance'] = current_time
+
+        # Сохраняем фактические веса портфеля после ребалансировки (или старые)
+        # для использования на следующем шаге, если не будет ребалансировки
+        current_value_drl = s_drl_state['value']
+        actual_weights = {}
+        if current_value_drl > 1e-9:
+            holdings_drl = s_drl_state['holdings']
+            for asset, quantity in holdings_drl.items():
+                 if quantity > 1e-9:
+                     price_col = f'{asset}_Price'
                      if price_col in sim_data.columns:
                          current_price = sim_data.loc[current_time, price_col]
-                         previous_price = sim_data.loc[previous_time, price_col]
-                         if pd.notna(previous_price) and previous_price > 0 and pd.notna(current_price):
-                             individual_return = (current_price / previous_price) - 1
-                             portfolio_return_drl += weight * individual_return
-                             valid_weights_sum += weight
+                         if pd.notna(current_price) and current_price > 0:
+                            actual_weights[asset] = (quantity * current_price) / current_value_drl
+        # Сохраняем актуальные веса, если они есть, иначе оставляем целевые (или старые)
+        s_drl_state['last_weights'] = actual_weights if actual_weights else target_drl_weights
 
-                 if abs(valid_weights_sum - 1.0) < 1e-6:
-                      current_drl_values[model_name] *= (1 + portfolio_return_drl)
+    # --- Стратегия: Perfect_Foresight ---
+    s_pf_state = strategies['Perfect_Foresight']
+    perform_rebalance_pf = False
+    is_first_investment_step_pf = (investment_change_this_step > 0 and (s_pf_state['value'] - investment_change_this_step) <= 1e-9)
+
+    # <<< MODIFIED: Add transaction time as a trigger >>>
+    is_transaction_time_now = current_time in transactions_sim.index
+
+    if not pd.isna(s_pf_state['last_rebalance']):
+        if current_time - s_pf_state['last_rebalance'] >= pd.Timedelta(days=rebalance_interval_days): # Используем тот же интервал
+            perform_rebalance_pf = True
+    elif is_first_investment_step_pf and s_pf_state['value'] > 1e-9:
+        s_pf_state['last_rebalance'] = current_time
+        perform_rebalance_pf = True
+
+    # <<< MODIFIED: Include transaction time in the trigger condition >>>
+    if (perform_rebalance_pf or is_transaction_time_now) and s_pf_state['value'] > 1e-6:
+        # Определяем конец периода для предвидения
+        lookahead_end_time = min(current_time + pd.Timedelta(days=rebalance_interval_days), sim_data.index.max())
+        # Находим ближайший индекс в sim_data к lookahead_end_time
+        # Используем get_indexer с методом 'nearest' для надежности
+        lookahead_indices = sim_data.index.get_indexer([lookahead_end_time], method='nearest')
+        # Проверяем, что индекс валиден
+        if lookahead_indices[0] != -1:
+            actual_lookahead_index = sim_data.index[lookahead_indices[0]]
+        else: # Не удалось найти ближайший индекс (маловероятно)
+            actual_lookahead_index = current_time # Остаемся на текущем
+
+        best_future_asset = None
+        max_future_return = -np.inf
+        best_future_asset_risky = None # Для хранения лучшего рискового отдельно
+
+        # Активы, доступные для инвестирования (те, что есть в холдингах + стейблкоин, если есть)
+        eligible_assets_pf = set(s_pf_state['holdings'].keys())
+        if has_stablecoin_data:
+            eligible_assets_pf.add(STABLECOIN_ASSET)
+
+        # Убираем активы без цены на текущий момент
+        eligible_assets_pf = {
+            a for a in eligible_assets_pf
+            if f'{a}_Price' in sim_data.columns and pd.notna(sim_data.loc[current_time, f'{a}_Price'])
+        }
+
+        # Исключаем стейблкоин из поиска лучшего *рискового* актива
+        risky_assets_pf = {a for a in eligible_assets_pf if a != STABLECOIN_ASSET}
+
+        if actual_lookahead_index > current_time and risky_assets_pf:
+            future_returns = {}
+            for asset in risky_assets_pf:
+                price_col = f'{asset}_Price'
+                price_now = sim_data.loc[current_time, price_col]
+                # Убедимся, что цена на дату предвидения тоже есть
+                if actual_lookahead_index in sim_data.index:
+                    price_future = sim_data.loc[actual_lookahead_index, price_col]
+                else: # Если lookahead индекс вышел за пределы sim_data
+                    price_future = np.nan
+
+                # Рассчитываем доходность, только если обе цены валидны
+                if pd.notna(price_now) and price_now > 1e-9 and pd.notna(price_future):
+                    future_returns[asset] = price_future / price_now
+
+            if future_returns: # Если удалось рассчитать доходности
+                 best_future_asset_risky = max(future_returns, key=future_returns.get)
+                 max_future_return = future_returns[best_future_asset_risky]
+                 # Выбираем лучший рисковый актив, если его доходность > 1.0 (или другого порога)
+                 if max_future_return > 1.0:
+                      best_future_asset = best_future_asset_risky
+
+        # Определяем целевой актив для ребалансировки
+        target_asset_pf = None
+        if best_future_asset is not None: # Если нашли лучший рисковый актив с доходом > 1
+             target_asset_pf = best_future_asset
+        elif has_stablecoin_data and STABLECOIN_ASSET in eligible_assets_pf: # Иначе выбираем стейблкоин, если он доступен
+             target_asset_pf = STABLECOIN_ASSET
+        elif risky_assets_pf: # Если стейблкоина нет, берем лучший из доступных рисковых (даже если доход < 1)
+              if best_future_asset_risky: # Если был найден лучший рисковый
+                   target_asset_pf = best_future_asset_risky
+              else: # Если вообще не удалось рассчитать доходности рисковых
+                   # Проверяем, есть ли вообще рисковые активы
+                   if risky_assets_pf:
+                        target_asset_pf = list(risky_assets_pf)[0] # Просто берем первый доступный
+        # Если нет ни стейблкоина, ни рисковых активов, target_asset_pf останется None
+
+        # Применяем ребалансировку
+        if target_asset_pf:
+            value_before_commission_pf = s_pf_state['value']
+            commission_pf = value_before_commission_pf * commission_rate
+            s_pf_state['commission_paid'] += commission_pf
+            value_to_rebalance_pf = value_before_commission_pf - commission_pf
+
+            if value_to_rebalance_pf > 1e-9:
+                price_col_target = f'{target_asset_pf}_Price'
+                current_price_target = sim_data.loc[current_time, price_col_target]
+                if pd.notna(current_price_target) and current_price_target > 1e-9:
+                    new_quantity_pf = value_to_rebalance_pf / current_price_target
+                    s_pf_state['holdings'] = {target_asset_pf: new_quantity_pf} # Все в один актив
+                    s_pf_state['value'] = new_quantity_pf * current_price_target # Обновляем стоимость
+                else:
+                    # Не удалось получить цену целевого актива, обнуляем холдинги
+                    print(f" ПРЕДУПРЕЖДЕНИЕ (PF Rebalance @ {current_time}): Цена для целевого актива {target_asset_pf} недоступна. Холдинги обнулены.")
+                    s_pf_state['holdings'] = {}
+                    s_pf_state['value'] = 0
+            else: # Стоимость <= 0 после комиссии
+                s_pf_state['holdings'] = {}
+                s_pf_state['value'] = 0
+
+            s_pf_state['last_rebalance'] = current_time
+            # sim_data.loc[current_time, 'Commission_PF'] = commission_pf # Записываем комиссию ШАГА (убрано, т.к. пишем накопленную ниже)
+        else: # Не удалось выбрать целевой актив
+             print(f" ПРЕДУПРЕЖДЕНИЕ (PF Rebalance @ {current_time}): Не удалось выбрать целевой актив. Ребалансировка пропущена.")
+             s_pf_state['last_rebalance'] = current_time # Сдвигаем дату, чтобы не пытаться ребалансировать пустоту
+
+    # 4. Запись результатов текущего шага
+    # Используем .at для предотвращения SettingWithCopyWarning при записи словарей
+    sim_data.at[current_time, 'Total_Invested'] = total_invested_overall
+    sim_data.at[current_time, 'Total_Withdrawn'] = total_withdrawn_overall
+    last_recorded_invested = total_invested_overall
+    last_recorded_withdrawn = total_withdrawn_overall
+
+    for s_name, state in strategies.items():
+        sim_data.at[current_time, f'Value_{s_name}'] = state['value']
+        if 'holdings' in state:
+            # Преобразуем holdings в строку json для сохранения, чтобы избежать проблем с типами
+            try:
+                holdings_str = json.dumps(state['holdings'].copy())
+                sim_data.at[current_time, f'Holdings_{s_name}'] = holdings_str
+            except TypeError:
+                 sim_data.at[current_time, f'Holdings_{s_name}'] = "{}" # Пустой словарь в виде строки
+        if s_name == 'Rebalance_To_Equal':
+             sim_data.at[current_time, 'Commission_S2'] = state['commission_paid'] # Записываем накопленную комиссию
+        # +++ Записываем комиссию Perfect_Foresight +++
+        elif s_name == 'Perfect_Foresight':
+             sim_data.at[current_time, 'Commission_PF'] = state['commission_paid']
+
+# --- Конец Симуляционного Цикла ---
+print("Симуляционный цикл завершен.")
+
+# Расчет итоговой комиссии для S2
+total_commission_paid_s2 = strategies['Rebalance_To_Equal']['commission_paid']
+print(f"Итоговая комиссия (Стратегия 2): {total_commission_paid_s2:.2f}")
+
+# Присоединяем результаты симуляции к основному DataFrame
+# Выбираем только нужные колонки для присоединения
+sim_cols_to_join = sim_data.filter(regex='^Value_|^Holdings_|^Total_Invested|^Total_Withdrawn|^Commission_S2')
+historical_data_final = historical_data_final.join(sim_cols_to_join)
+
+# --- Расчет Траекторий Отдельных Транзакций (для визуализации, опционально) ---
+# Этот блок больше не релевантен в старом виде, так как Actual_Buy_Hold теперь считает общую стоимость
+print("Расчет траекторий отдельных транзакций B&H - БЛОК ПРОПУЩЕН (используйте Value_Actual_Buy_Hold)")
+# Убираем расчет старых колонок Value_ASSET_ID
+# individual_purchase_cols = [] # Очищаем список
 
 
-    # --- Rebalance/Decision Making for Current Step ---
-
-    # Strategy 2: Perfect Rebalance Check & Logic
-    perform_rebalance_check_s2 = False
-    if not pd.isna(last_rebalance_time_s2):
-        time_since_last_rebalance_s2 = current_time - last_rebalance_time_s2
-        if trigger_rebalance_s2 or (time_since_last_rebalance_s2 >= pd.Timedelta(days=rebalance_interval_days)):
-            perform_rebalance_check_s2 = True
-
-    if perform_rebalance_check_s2 and current_perfect_value > 1e-6:
-         eligible_alt_price_cols = [col for col in asset_price_cols_now if col != stablecoin_price_col]
-         best_alt_for_future = None; max_future_return = -np.inf
-         if eligible_alt_price_cols:
-             lookahead_end_time = min(current_time + pd.Timedelta(days=rebalance_interval_days), sim_data.index.max())
-             actual_lookahead_index = sim_data.index.asof(lookahead_end_time)
-             future_returns = {}
-             if actual_lookahead_index > current_time:
-                 for asset_col in eligible_alt_price_cols:
-                     price_now = sim_data.loc[current_time, asset_col]
-                     price_future = sim_data.loc[actual_lookahead_index, asset_col]
-                     if pd.notna(price_now) and price_now > 0 and pd.notna(price_future): future_returns[asset_col] = price_future / price_now
-             if future_returns:
-                 best_alt_for_future = max(future_returns, key=future_returns.get)
-                 max_future_return = future_returns[best_alt_for_future]
-
-         new_held_asset_col_s2 = None
-         if best_alt_for_future is not None and max_future_return > 1.0: new_held_asset_col_s2 = best_alt_for_future
-         elif has_stablecoin_data: new_held_asset_col_s2 = stablecoin_price_col
-         elif best_alt_for_future is not None: new_held_asset_col_s2 = best_alt_for_future
-         elif held_asset_perfect_col: new_held_asset_col_s2 = held_asset_perfect_col
-
-         if new_held_asset_col_s2 is not None and held_asset_perfect_col is not None and new_held_asset_col_s2 != held_asset_perfect_col:
-             commission_cost = current_perfect_value * commission_rate
-             current_perfect_value -= commission_cost
-             total_commission_paid += commission_cost
-         if new_held_asset_col_s2: held_asset_perfect_col = new_held_asset_col_s2
-         last_rebalance_time_s2 = current_time # Обновляем время S2
-
-    # Strategy 5: DRL Weight Rebalance Check and Application (for ALL models)
-    perform_rebalance_check_drl = False
-    if not pd.isna(last_drl_rebalance_time):
-        time_since_last_rebalance_drl = current_time - last_drl_rebalance_time
-        if first_step_simulation or trigger_rebalance_drl or \
-           (time_since_last_rebalance_drl >= pd.Timedelta(days=drl_rebalance_interval_days)):
-            perform_rebalance_check_drl = True
-
-    if perform_rebalance_check_drl:
-        # Определяем доступные активы для DRL (включая стейблкоин)
-        drl_allocation_assets = assets_in_portfolio_now.copy()
-        if has_stablecoin_data and STABLECOIN_ASSET in DRL_TRAINING_ASSETS:
-            if STABLECOIN_ASSET not in drl_allocation_assets:
-                drl_allocation_assets.append(STABLECOIN_ASSET)
-
-        # Обновляем веса для КАЖДОЙ DRL модели
-        for model_name, df_actions in df_actions_all_models.items():
-            current_drl_weights_calc = {} # Временные веса для текущей модели
-            if current_time in df_actions.index:
-                 drl_target_weights_all = df_actions.loc[current_time]
-                 filtered_weights = {}
-                 for asset_ticker in drl_allocation_assets:
-                     if asset_ticker in drl_target_weights_all.index:
-                          weight = drl_target_weights_all[asset_ticker]
-                          filtered_weights[asset_ticker] = weight if pd.notna(weight) else 0.0
-                     else:
-                         filtered_weights[asset_ticker] = 0.0
-
-                 total_filtered_weight = sum(filtered_weights.values())
-                 if total_filtered_weight > 1e-6:
-                     current_drl_weights_calc = {asset: weight / total_filtered_weight
-                                                 for asset, weight in filtered_weights.items()}
-                 else: # Fallback
-                     if has_stablecoin_data and STABLECOIN_ASSET in drl_allocation_assets:
-                          current_drl_weights_calc = {asset: (1.0 if asset == STABLECOIN_ASSET else 0.0) for asset in drl_allocation_assets}
-                     elif drl_allocation_assets:
-                          num_assets = len(drl_allocation_assets)
-                          current_drl_weights_calc = {asset: 1.0 / num_assets for asset in drl_allocation_assets}
-
-            else: # Fallback if no DRL prediction for this time
-                if has_stablecoin_data and STABLECOIN_ASSET in drl_allocation_assets:
-                     current_drl_weights_calc = {asset: (1.0 if asset == STABLECOIN_ASSET else 0.0) for asset in drl_allocation_assets}
-                elif drl_allocation_assets:
-                     num_assets = len(drl_allocation_assets)
-                     current_drl_weights_calc = {asset: 1.0 / num_assets for asset in drl_allocation_assets}
-
-            # --- Обновляем `last_drl_weights` для ТЕКУЩЕЙ модели --- 
-            last_drl_weights_all[model_name] = current_drl_weights_calc
-            # --- Конец логики для одной DRL модели --- 
-
-        last_drl_rebalance_time = current_time # Обновляем общее время ребалансировки DRL
-
-    # Инициализация весов DRL на первом шаге (для всех моделей)
-    if first_step_simulation:
-        fallback_weights = {}
-        if has_stablecoin_data and STABLECOIN_ASSET in assets_in_portfolio_now:
-            fallback_weights = {asset: (1.0 if asset == STABLECOIN_ASSET else 0.0) for asset in drl_allocation_assets}
-        elif assets_in_portfolio_now:
-             num_assets = len(assets_in_portfolio_now)
-             fallback_weights = {asset: 1.0 / num_assets for asset in assets_in_portfolio_now}
-        # Применяем fallback к тем моделям, чьи веса еще не инициализированы
-        for model_name in last_drl_weights_all:
-            if not last_drl_weights_all[model_name]: # Если словарь пуст
-                last_drl_weights_all[model_name] = fallback_weights.copy()
-
-
-    # --- Record results for the current time step ---
-    # Strategy 2: Perfect Rebalance
-    sim_data.loc[current_time, 'Held_Asset_Perfect'] = held_asset_perfect_col.replace("_Price", "") if held_asset_perfect_col else 'N/A'
-    sim_data.loc[current_time, 'Total_Value_Perfect'] = current_perfect_value
-    # Strategy 4: Bank
-    sim_data.loc[current_time, 'Total_Value_Bank'] = current_bank_value
-    # Strategy 5: DRL (All Models)
-    # sim_data.loc[current_time, 'Total_Value_DRL_DDPG'] = current_drl_value # Old
-    for model_name, current_value in current_drl_values.items():
-        sim_data.loc[current_time, f'Total_Value_{model_name}'] = current_value
-
-    # Record Investment Added
-    sim_data.loc[current_time, 'Investment_Added'] = investment_added_this_step
-
-    first_step_simulation = False # Mark first step as done
-
-# --- End of Simulation Loop ---
-
-# Post-simulation calculations (e.g., performance metrics) can be added here
-print("Simulation finished.")
-print(f"Total commission paid (Strategy 2): {total_commission_paid}")
-
-# Join simulation results back to the main dataframe
-historical_data_final = historical_data_final.join(sim_data[['Total_Value_Perfect', 'Held_Asset_Perfect', 'Total_Value_Bank'] + [f'Total_Value_{model_name}' for model_name in df_actions_all_models.keys()]])
-
-
-# --- Расчет Траекторий Отдельных Покупок (Original Portfolio Buy & Hold) ---
-print("  Расчет траекторий отдельных покупок (Buy & Hold)...")
-individual_purchase_cols = []
-for index, purchase_row in portfolio_df.iterrows():
-    asset = purchase_row['Актив']; purchase_id = purchase_row.get('ID', index); price_col = f'{asset}_Price'
-    if price_col not in historical_data_final.columns or pd.isna(purchase_row['Purchase_Price_Actual']) or pd.isna(purchase_row['Actual_Purchase_Time_Index']): continue
-    initial_investment = purchase_row['Общая стоимость']; purchase_price = purchase_row['Purchase_Price_Actual']; purchase_time_index = purchase_row['Actual_Purchase_Time_Index']
-    if purchase_price <= 0: continue
-    col_name = f"Value_{asset}_ID{purchase_id}"
-    individual_purchase_cols.append(col_name)
-    historical_data_final[col_name] = np.nan
-    time_slice = historical_data_final.index >= purchase_time_index
-    current_prices = historical_data_final.loc[time_slice, price_col]
-    values = initial_investment * (current_prices / purchase_price)
-    historical_data_final.loc[time_slice, col_name] = values
-print("Расчет траекторий B&H завершен.")
-
-
-# --- Шаг 4: Расчет Метрик Эффективности ---
+# --- Шаг 4: Расчет Метрик Эффективности --- (Переписанный код)
 print("\n--- Расчет Метрик Эффективности ---")
-strategy_cols = {
-    'Buy & Hold': 'Total_Value_Relative',
-    'Perfect Rebalance': 'Total_Value_Perfect',
-    'Stablecoin Only': 'Total_Value_Stablecoin',
-    'Bank Deposit': 'Total_Value_Bank',
-}
-# Добавляем DRL стратегии динамически
-for model_name in df_actions_all_models.keys():
-    strategy_cols[f'DRL {model_name}'] = f'Total_Value_{model_name}'
 
-# --- (Rest of the metrics calculation code remains the same as previous response) ---
-metrics_data = historical_data_final.loc[historical_data_final.index >= first_investment_time].copy()
+# Переименование колонок стратегий для удобства в метриках
+strategy_cols_map = {
+    'Actual Buy & Hold': 'Value_Actual_Buy_Hold',
+    'Rebalance to Equal': 'Value_Rebalance_To_Equal',
+    'Perfect Foresight': 'Value_Perfect_Foresight', # +++ Добавлено +++
+    'Stablecoin Only': 'Value_Stablecoin_Only',
+    'Bank Deposit': 'Value_Bank_Deposit',
+}
+for model_name in df_actions_all_models.keys():
+    strategy_cols_map[f'DRL {model_name}'] = f'Value_DRL_{model_name}'
+
+# Отфильтровываем данные для периода симуляции
+metrics_data = historical_data_final.loc[sim_data_index].copy()
+
+# Проверяем наличие необходимых колонок
+required_metrics_cols = ['Total_Invested', 'Total_Withdrawn'] + list(strategy_cols_map.values())
+missing_cols_metrics = [col for col in required_metrics_cols if col not in metrics_data.columns]
+if missing_cols_metrics:
+    print(f"ОШИБКА: Отсутствуют необходимые колонки для расчета метрик: {missing_cols_metrics}")
+    exit()
+
 results = {}
 if not metrics_data.empty:
-    start_date = metrics_data.index.min(); end_date = metrics_data.index.max();
-    duration_days = (end_date - start_date).total_seconds() / (24 * 60 * 60); duration_years = duration_days / 365.25;
-    print(f"Период: {start_date.strftime('%Y-%m-%d %H:%M')} - {end_date.strftime('%Y-%m-%d %H:%M')} ({duration_years:.2f} лет)");
-    total_investment_in_period = portfolio_df[portfolio_df['Actual_Purchase_Time_Index'] >= first_investment_time]['Общая стоимость'].sum();
-    print(f"Инвестировано за период: ${total_investment_in_period:,.2f}");
+    start_date = metrics_data.index.min()
+    end_date = metrics_data.index.max()
+    duration_days = (end_date - start_date).total_seconds() / (24 * 60 * 60)
+    duration_years = duration_days / 365.25
+    print(f"Период анализа метрик: {start_date.strftime('%Y-%m-%d %H:%M')} - {end_date.strftime('%Y-%m-%d %H:%M')} ({duration_years:.2f} лет)")
 
-    annual_risk_free_rate = bank_apr
-    trading_days_per_year = 252
+    # Получаем итоговые инвестиции и выводы
+    final_total_invested = metrics_data['Total_Invested'].iloc[-1] if not metrics_data['Total_Invested'].empty else 0
+    final_total_withdrawn = metrics_data['Total_Withdrawn'].iloc[-1] if not metrics_data['Total_Withdrawn'].empty else 0
+    print(f"Всего инвестировано за период: ${final_total_invested:,.2f}")
+    print(f"Всего выведено за период: ${final_total_withdrawn:,.2f}")
 
+    annual_risk_free_rate = bank_apr # Используем ту же ставку для Шарпа
+    trading_days_per_year = 252 # Для аннуализации волатильности
     print(f"Годовая безрисковая ставка (для Sharpe): {annual_risk_free_rate*100:.2f}%")
 
-    for name, col in strategy_cols.items():
+    for name, col in strategy_cols_map.items():
         if col not in metrics_data.columns or metrics_data[col].isnull().all():
-             print(f"  Пропуск метрик для {name}: нет данных.")
+             print(f"  Пропуск метрик для {name}: нет данных в колонке {col}.")
              continue
 
-        hourly_values = metrics_data[col].ffill().replace([np.inf, -np.inf], np.nan).dropna();
+        hourly_values = metrics_data[col].ffill().replace([np.inf, -np.inf], np.nan).dropna()
         if hourly_values.empty or len(hourly_values) <= 1:
-             print(f"  Пропуск метрик для {name}: недостаточно данных после очистки.")
+             print(f"  Пропуск метрик для {name}: недостаточно данных после очистки ({len(hourly_values)} точек).")
              continue
 
         final_value = hourly_values.iloc[-1]
-        start_value = hourly_values.iloc[0]
-        total_return = (final_value / total_investment_in_period) - 1 if total_investment_in_period > 0 else 0
+        # Чистая прибыль = Конечная стоимость + Выведено - Инвестировано
+        net_profit = final_value + final_total_withdrawn - final_total_invested
 
+        # Общая доходность (Simple Return)
+        total_return = (net_profit / final_total_invested) if final_total_invested > 1e-9 else 0
+
+        # Годовая доходность (Simple Annualized)
+        # (Может быть неточной при значительных вводах/выводах)
         annualized_return = np.nan
-        if duration_years > (1 / 365.25) and start_value > 1e-9:
-            base_cagr = final_value / start_value
-            if base_cagr > 0:
-                try: annualized_return = (base_cagr)**(1 / duration_years) - 1
-                except ValueError: annualized_return = np.nan
+        if duration_years > (1 / 365.25): # Хотя бы 1 день
+            if final_total_invested > 1e-9:
+                 # Простая аннуализация общей доходности
+                 try:
+                     # Используем (1 + total_return) как базу для аннуализации
+                     annualized_return = (1 + total_return)**(1 / duration_years) - 1
+                 except (ValueError, OverflowError):
+                     annualized_return = np.nan # Ошибка, если base < 0
+            elif net_profit > 0: # Если не инвестировали, но получили прибыль (странно)
+                annualized_return = np.inf
+            else:
+                 annualized_return = 0.0 # Если не инвестировали и нет прибыли
 
+        # Годовая волатильность (по дневным лог. доходностям)
         daily_values = hourly_values.resample('D').last().ffill().dropna()
         annualized_volatility = np.nan
         if len(daily_values) > 1:
+            # log(P_t / P_{t-1})
             daily_log_returns = np.log(daily_values / daily_values.shift(1))
-            daily_log_returns = daily_log_returns.replace([np.inf, -np.inf], np.nan).dropna()
+            # Исключаем бесконечности и NaN, возникающие при нулевых значениях
+            daily_log_returns = daily_log_returns[np.isfinite(daily_log_returns)]
             if len(daily_log_returns) > 1:
                 std_dev_daily_log = daily_log_returns.std()
-                if name in ['Stablecoin Only', 'Bank Deposit']: annualized_volatility = 0.0
-                elif std_dev_daily_log < 1e-9: annualized_volatility = 0.0
-                else: annualized_volatility = std_dev_daily_log * np.sqrt(trading_days_per_year)
+                # Для безрисковых стратегий волатильность = 0
+                if name in ['Stablecoin Only', 'Bank Deposit']:
+                    annualized_volatility = 0.0
+                elif std_dev_daily_log < 1e-9:
+                    annualized_volatility = 0.0
+                else:
+                    annualized_volatility = std_dev_daily_log * np.sqrt(trading_days_per_year)
 
+        # Максимальная просадка (Max Drawdown)
         rolling_max = hourly_values.cummax()
-        drawdown = (hourly_values - rolling_max) / rolling_max
-        drawdown = drawdown.replace([np.inf, -np.inf], np.nan).fillna(0)
+        # Рассчитываем просадку только там, где rolling_max > 0
+        drawdown = pd.Series(np.nan, index=hourly_values.index)
+        valid_rolling_max = rolling_max[rolling_max > 1e-9]
+        if not valid_rolling_max.empty:
+             drawdown.loc[valid_rolling_max.index] = (hourly_values.loc[valid_rolling_max.index] - valid_rolling_max) / valid_rolling_max
+        # Заменяем NaN (где rolling_max был 0) нулями
+        drawdown = drawdown.fillna(0)
         max_drawdown = drawdown.min() if not drawdown.empty else 0.0
 
+        # Коэффициент Шарпа
         sharpe_ratio = np.nan
         if pd.notna(annualized_return) and pd.notna(annualized_volatility):
-            if annualized_volatility > 1e-9: sharpe_ratio = (annualized_return - annual_risk_free_rate) / annualized_volatility
-            elif annualized_return > annual_risk_free_rate: sharpe_ratio = np.inf
-            elif annualized_return < annual_risk_free_rate: sharpe_ratio = -np.inf
-            else: sharpe_ratio = 0.0
+            if annualized_volatility > 1e-9:
+                sharpe_ratio = (annualized_return - annual_risk_free_rate) / annualized_volatility
+            elif annualized_return > annual_risk_free_rate:
+                sharpe_ratio = np.inf
+            elif annualized_return < annual_risk_free_rate:
+                sharpe_ratio = -np.inf
+            else:
+                sharpe_ratio = 0.0
 
         results[name] = {
-            'Final Value': final_value, 'Total Return (%)': total_return * 100,
+            'Final Value': final_value,
+            'Net Profit': net_profit, # Добавлено для информации
+            'Total Return (%)': total_return * 100,
             'Annualized Return (%)': annualized_return * 100 if pd.notna(annualized_return) else np.nan,
             'Annualized Volatility (%)': annualized_volatility * 100 if pd.notna(annualized_volatility) else np.nan,
-            'Max Drawdown (%)': max_drawdown * 100, 'Sharpe Ratio': sharpe_ratio }
+            'Max Drawdown (%)': max_drawdown * 100,
+            'Sharpe Ratio': sharpe_ratio
+        }
 
-    results_df = pd.DataFrame(results).T
+    if results:
+        results_df = pd.DataFrame(results).T
 
-    def format_value(value, format_str):
-        if pd.isna(value): return 'N/A'
-        if np.isinf(value): return 'inf' if value > 0 else '-inf'
-        try: return format_str.format(value)
-        except (ValueError, TypeError): return str(value)
+        # Форматирование для вывода
+        def format_value(value, format_str):
+            if pd.isna(value): return 'N/A'
+            if np.isinf(value): return 'inf' if value > 0 else '-inf'
+            try: return format_str.format(value)
+            except (ValueError, TypeError): return str(value)
 
-    results_df['Final Value'] = results_df['Final Value'].apply(lambda x: format_value(x, '${:,.2f}'))
-    results_df['Total Return (%)'] = results_df['Total Return (%)'].apply(lambda x: format_value(x, '{:.2f}%'))
-    results_df['Annualized Return (%)'] = results_df['Annualized Return (%)'].apply(lambda x: format_value(x, '{:.2f}%'))
-    results_df['Annualized Volatility (%)'] = results_df['Annualized Volatility (%)'].apply(lambda x: format_value(x, '{:.2f}%'))
-    results_df['Max Drawdown (%)'] = results_df['Max Drawdown (%)'].apply(lambda x: format_value(x, '{:.2f}%'))
-    results_df['Sharpe Ratio'] = results_df['Sharpe Ratio'].apply(lambda x: format_value(x, '{:.3f}'))
+        results_df_display = results_df.copy()
+        results_df_display['Final Value'] = results_df_display['Final Value'].apply(lambda x: format_value(x, '${:,.2f}'))
+        results_df_display['Net Profit'] = results_df_display['Net Profit'].apply(lambda x: format_value(x, '${:,.2f}'))
+        results_df_display['Total Return (%)'] = results_df_display['Total Return (%)'].apply(lambda x: format_value(x, '{:.2f}%'))
+        results_df_display['Annualized Return (%)'] = results_df_display['Annualized Return (%)'].apply(lambda x: format_value(x, '{:.2f}%'))
+        results_df_display['Annualized Volatility (%)'] = results_df_display['Annualized Volatility (%)'].apply(lambda x: format_value(x, '{:.2f}%'))
+        results_df_display['Max Drawdown (%)'] = results_df_display['Max Drawdown (%)'].apply(lambda x: format_value(x, '{:.2f}%'))
+        results_df_display['Sharpe Ratio'] = results_df_display['Sharpe Ratio'].apply(lambda x: format_value(x, '{:.3f}'))
 
+        print("\nСводная таблица метрик:")
+        print(results_df_display)
+    else:
+        print("Нет данных для расчета метрик.")
 else:
-    print("Нет данных для расчета метрик.")
+    print("Нет данных для расчета метрик (metrics_data пуст).")
 
 
-# --- Шаг 5: Визуализация ---
+# --- Шаг 5: Визуализация --- (Адаптированный код)
 print("\n--- Визуализация ---")
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+from collections import OrderedDict
+
 plt.style.use('seaborn-v0_8-darkgrid')
 fig, ax = plt.subplots(figsize=(17, 10))
 
-# Base plot order (non-DRL)
+# Используем карту имен стратегий и колонок из блока метрик
 plot_order_base = {
-    'Total_Value_Bank': {'label': f'Стратегия 4: Банк ({bank_apr*100:.0f}% APR)', 'color': 'purple', 'style': '-', 'lw': 1.5, 'z': 6},
-    'Total_Value_Stablecoin': {'label': f'Стратегия 3: {STABLECOIN_ASSET} Only', 'color': 'green', 'style': '-', 'lw': 1.5, 'z': 7},
-    'Total_Value_Perfect': {'label': f'Стр. 2: Ребаланс (Ком: {commission_rate*100:.2f}%, Парк: {STABLECOIN_ASSET if has_stablecoin_data else "Нет"})', 'color': 'blue', 'style': '--', 'lw': 2.5, 'z': 9},
-    'Total_Value_Relative': {'label': 'Стр. 1: Buy & Hold (портфель)', 'color': 'black', 'style': '-', 'lw': 2.5, 'z': 10},
+    # +++ Добавляем Perfect Foresight +++
+    'Value_Perfect_Foresight': {'label': f'Perfect Foresight (Comm: {commission_rate*100:.2f}%)', 'color': 'cyan', 'style': '--', 'lw': 2.0, 'z': 11}, # Выше всех
+    'Value_Bank_Deposit': {'label': f'Bank Deposit ({bank_apr*100:.0f}% APR)', 'color': 'purple', 'style': '-', 'lw': 1.5, 'z': 6},
+    'Value_Stablecoin_Only': {'label': f'Stablecoin Only ({STABLECOIN_ASSET})', 'color': 'green', 'style': '-', 'lw': 1.5, 'z': 7},
+    'Value_Rebalance_To_Equal': {'label': f'Rebalance to Equal (Comm: {commission_rate*100:.2f}%)', 'color': 'blue', 'style': '--', 'lw': 2.5, 'z': 9},
+    'Value_Actual_Buy_Hold': {'label': 'Actual Buy & Hold', 'color': 'black', 'style': '-', 'lw': 2.5, 'z': 10},
 }
 
-# Colors and styles for DRL models
+# Цвета и стили для DRL моделей (остаются без изменений)
 drl_plot_settings = {
-    "DDPG": {'color': 'red', 'style': '-.', 'lw': 2.0, 'z': 8},
-    "A2C": {'color': 'orange', 'style': '-.', 'lw': 1.8, 'z': 8},
-    "PPO": {'color': 'magenta', 'style': '-.', 'lw': 1.8, 'z': 8},
-    "SAC": {'color': 'brown', 'style': '-.', 'lw': 1.8, 'z': 8},
+    "DDPG": {"color": "red", "style": "-.", "lw": 2.0, "z": 8},
+    "A2C": {"color": "orange", "style": "-.", "lw": 1.8, "z": 8},
+    "PPO": {"color": "magenta", "style": "-.", "lw": 1.8, "z": 8},
+    "SAC": {"color": "brown", "style": "-.", "lw": 1.8, "z": 8},
 }
 
-# Combine base and DRL settings
+# Комбинируем настройки базовых и DRL стратегий
 plot_order = plot_order_base.copy()
 next_z_order = 8 # Starting z-order for DRL models
-for i, model_name in enumerate(df_actions_all_models.keys()):
-    col_name = f'Total_Value_{model_name}'
+for model_name in df_actions_all_models.keys():
+    col_name = f"Value_DRL_{model_name}" # Правильное имя колонки
+    # Находим имя стратегии для метки
+    strategy_label_name = f"DRL {model_name}"
     settings = drl_plot_settings.get(model_name, {})
     plot_order[col_name] = {
-        # 'label': f'Стратегия 5: DRL {model_name}', # Старый формат
-        'label': f'DRL {model_name}', # <<<=== Новый формат метки
-        'color': settings.get('color', plt.cm.viridis(i / len(df_actions_all_models))), # Fallback color
-        'style': settings.get('style', '-.'),
-        'lw': settings.get('lw', 1.8),
-        'z': settings.get('z', next_z_order)
+        "label": strategy_label_name, # Используем короткое имя DRL {model_name}
+        "color": settings.get("color", plt.cm.viridis(i / len(df_actions_all_models) if len(df_actions_all_models)>0 else 0)), # Fallback color
+        "style": settings.get("style", "-."),
+        "lw": settings.get("lw", 1.8),
+        "z": settings.get("z", next_z_order)
     }
-    # Optional: increment z-order if you want DRL lines clearly layered
-    # next_z_order += 0.1
+    # next_z_order += 0.1 # Опционально для слоев
 
-
-# --- Debug: Check data and plot order before plotting --- 
-print("\n--- Debug: Checking data and plot order before plotting ---")
-print("Columns available in historical_data_final:", historical_data_final.columns.tolist())
-print("Plot order dictionary keys:", list(plot_order.keys()))
-# print("Plot order dictionary full:") # Optional: uncomment for full details
-# import json 
-# print(json.dumps(plot_order, indent=2))
-print("-----------------------------------------------------------\n")
-# --- End Debug --- 
-
-
-# --- (Plotting code remains the same as previous response, using historical_data_final and original asset_color_map) ---
-# Plot main strategies
-print("\n--- Plotting Main Strategies ---") # Add header for clarity
+# --- Отрисовка основных стратегий ---
+print("\n--- Отрисовка основных стратегий ---")
 for col, settings in plot_order.items():
     if col in historical_data_final.columns:
-        if not historical_data_final[col].isnull().all():
-             print(f"  Plotting: {col} with label: \"{settings['label']}\"") # Debug print
-             ax.plot(historical_data_final.index, historical_data_final[col], label=settings['label'], color=settings['color'], linewidth=settings['lw'], linestyle=settings['style'], zorder=settings['z'])
+        # Убираем fillna(0) - пусть рисует с пропусками, если они есть
+        plot_data = historical_data_final[col].ffill() # Только ffill
+        if not plot_data.isnull().all() and not (plot_data == 0).all():
+             print(f"  Рисуем: {col} с меткой: \"{settings['label']}\"")
+             ax.plot(plot_data.index, plot_data, label=settings['label'], color=settings['color'], linewidth=settings['lw'], linestyle=settings['style'], zorder=settings['z'])
         else:
-             print(f"  Skipping plot for {col}: All NaN values.") # Debug print for NaN columns
+             print(f"  Пропуск отрисовки {col}: Все значения NaN или 0.")
     else:
-         # This case should not happen based on previous debug output, but good to keep
-         print(f"  Skipping plot for {col}: Column not found in historical_data_final.")
-print("--- Finished Plotting Main Strategies ---\n") # Add footer
+         print(f"  Пропуск отрисовки {col}: Колонка не найдена в historical_data_final.")
+print("--- Завершена отрисовка основных стратегий ---")
 
-# Original asset color map
-asset_color_map = {'BTCUSDT': 'orange', 'BNBUSDT': 'gold', 'LTCUSDT': 'silver', 'HBARUSDT': 'cyan', STABLECOIN_ASSET: 'lightgreen'}
-default_colors = plt.cm.tab10(np.linspace(0, 1, 10)); color_idx = 0
-plotted_individual_labels = set()
+# --- Удаление отрисовки отдельных линий B&H ---
+# Код, который рисовал линии Value_ASSET_ID..., удален.
 
-# Plot individual B&H lines
-for i, (index, purchase_row) in enumerate(portfolio_df.iterrows()):
-    asset = purchase_row['Актив']; purchase_id = purchase_row.get('ID', index)
-    col_name = f"Value_{asset}_ID{purchase_id}"; purchase_date_str = purchase_row['Дата'].strftime('%Y-%m-%d')
-    if col_name in historical_data_final.columns and not historical_data_final[col_name].isnull().all():
-        plot_color = asset_color_map.get(asset, default_colors[color_idx % len(default_colors)]); color_idx += 1
-        label = f'{asset} (B&H)'
-        current_label = label if label not in plotted_individual_labels else None
-        if current_label: plotted_individual_labels.add(label)
-        ax.plot(historical_data_final.index, historical_data_final[col_name],
-                label=current_label, color=plot_color, linewidth=1.0, linestyle=':', alpha=0.7, zorder=5)
+# --- Отрисовка маркеров транзакций --- 
+print("--- Отрисовка маркеров транзакций ---")
+# Используем исходный portfolio_df с рассчитанными Actual_Transaction_Time_Index и Transaction_Price_Actual
+plotted_marker_labels = set() # Отслеживаем уникальные метки для легенды
+asset_color_map = {"BTCUSDT": "orange", "BNBUSDT": "gold", "LTCUSDT": "silver", "HBARUSDT": "cyan", STABLECOIN_ASSET: "lightgreen"}
+default_marker_color = "grey"
 
-# Plot purchase markers
-plotted_marker_assets = set()
-full_relative_values = historical_data_final['Total_Value_Relative'].reindex(historical_data_final.index).ffill()
 for index, row in portfolio_df.iterrows():
-    plot_time = row['Actual_Purchase_Time_Index']; asset = row['Актив']
-    if pd.isna(plot_time) or plot_time not in full_relative_values.index: continue
-    value_at_purchase_s1 = full_relative_values.loc[plot_time]
-    value_at_purchase_s1 = value_at_purchase_s1 if pd.notna(value_at_purchase_s1) else 0
-    label_key = f'Покупка ({asset})'; current_label = None
-    if asset not in plotted_marker_assets: current_label = label_key; plotted_marker_assets.add(asset)
-    marker_color = asset_color_map.get(asset, 'red')
-    ax.scatter(plot_time, value_at_purchase_s1, color=marker_color, s=60, zorder=15, label=current_label, marker='o', edgecolors='black')
+    plot_time = row['Actual_Transaction_Time_Index']
+    asset = row['Актив']
+    trans_type = row['Тип']
+    # Находим значение стратегии Actual_Buy_Hold в момент транзакции для Y-координаты
+    value_at_transaction = np.nan
+    if plot_time in historical_data_final.index:
+        value_at_transaction = historical_data_final.loc[plot_time, 'Value_Actual_Buy_Hold']
 
-# Chart formatting
-ax.set_title(f'Сравнение стратегий ({days_history} дней до {today.strftime("%Y-%m-%d")}) - Ориг. Портфель', fontsize=16)
+    # Пропускаем, если нет времени или значения
+    if pd.isna(plot_time) or pd.isna(value_at_transaction):
+        continue
+
+    # Определяем цвет и маркер
+    color = asset_color_map.get(asset, default_marker_color)
+    marker = "^" if trans_type == "Покупка" else "v" # Треугольник вверх для покупки, вниз для продажи
+    label_key = f"{trans_type} ({asset})"
+    current_label = None
+    if label_key not in plotted_marker_labels:
+        current_label = label_key
+        plotted_marker_labels.add(label_key)
+
+    ax.scatter(plot_time, value_at_transaction,
+               color=color,
+               marker=marker,
+               s=80, # Увеличим размер маркеров
+               zorder=15,
+               label=current_label,
+               edgecolors='black',
+               alpha=0.8)
+print("--- Завершена отрисовка маркеров транзакций ---")
+
+# --- Форматирование графика --- (В основном без изменений)
+ax.set_title(f"Сравнение стратегий ({days_history} дней до {today.strftime('%Y-%m-%d')}) - С учетом транзакций", fontsize=16) # Обновлен заголовок
 ax.set_xlabel('Дата', fontsize=12); ax.set_ylabel('Стоимость портфеля (USDT) - Лог. шкала', fontsize=12)
 ax.grid(True, linestyle=':', linewidth=0.6); plt.xticks(rotation=30, ha='right'); ax.set_yscale('log'); ax.minorticks_on()
 ax.grid(which='major', linestyle='-', linewidth='0.5', color='gray'); ax.grid(which='minor', linestyle=':', linewidth='0.5', color='lightgray')
 ax.yaxis.set_major_formatter(mticker.ScalarFormatter()); ax.yaxis.get_major_formatter().set_scientific(False); ax.yaxis.get_major_formatter().set_useOffset(False)
-min_val = historical_data_final[[c for c in plot_order.keys() if c in historical_data_final]].min().min()
-max_val = historical_data_final[[c for c in plot_order.keys() if c in historical_data_final]].max().max()
-if pd.notna(min_val) and min_val > 0 and pd.notna(max_val) and max_val > min_val: ax.set_ylim(bottom=min_val * 0.8, top=max_val * 1.2)
 
-# Legend Handling - Revised Logic
+# Настройка пределов Y-оси (осторожно с логарифмической шкалой)
+try:
+    plot_cols = [col for col, settings in plot_order.items() if col in historical_data_final]
+    min_val = historical_data_final[plot_cols][historical_data_final[plot_cols] > 1e-6].min().min() # Игнорируем околонулевые значения для min
+    max_val = historical_data_final[plot_cols].max().max()
+    if pd.notna(min_val) and min_val > 0 and pd.notna(max_val) and max_val > min_val:
+        ax.set_ylim(bottom=min_val * 0.8, top=max_val * 1.2)
+    elif pd.notna(max_val):
+         ax.set_ylim(top=max_val * 1.2) # Если только максимум валиден
+except Exception as e:
+    print(f"Предупреждение: Не удалось установить пределы Y-оси: {e}")
+
+# --- Легенда --- (Обновленная логика)
 handles, labels = ax.get_legend_handles_labels()
-label_handle_map = dict(zip(labels, handles))
-by_label = OrderedDict()
+# Удаляем дубликаты, сохраняя порядок
+by_label = OrderedDict(zip(labels, handles))
 
-# Add strategy lines first, maintaining order from plot_order
+# Разделяем метки на стратегии и транзакции
+strategy_labels = {lbl: hnd for lbl, hnd in by_label.items() if not ('Покупка' in lbl or 'Продажа' in lbl)}
+transaction_labels = {lbl: hnd for lbl, hnd in by_label.items() if ('Покупка' in lbl or 'Продажа' in lbl)}
+# --- Corrected way to filter transaction labels based on actual transaction types --- 
+transaction_labels = {lbl: hnd for lbl, hnd in by_label.items() if any(ttype in lbl for ttype in valid_types)} # valid_types=['Покупка', 'Продажа']
+
+# Сортируем метки транзакций (сначала Покупки, потом Продажи, затем по активу)
+def sort_key_transaction(label):
+    type_order = 0 if 'Покупка' in label else 1
+    asset_name = label[label.find('(')+1:label.find(')')]
+    return (type_order, asset_name)
+
+sorted_transaction_keys = sorted(transaction_labels.keys(), key=sort_key_transaction)
+
+# Формируем финальный порядок легенды: стратегии, затем транзакции
+final_legend_order = OrderedDict()
+# Добавляем стратегии в порядке их отрисовки (из plot_order)
 for col, settings in plot_order.items():
     label = settings.get('label')
-    if label in label_handle_map:
-        by_label[label] = label_handle_map[label]
+    if label in strategy_labels:
+        final_legend_order[label] = strategy_labels[label]
 
-# Add marker labels, sorted
-marker_labels = {lbl: hnd for lbl, hnd in label_handle_map.items() if "Покупка" in lbl}
-marker_sorted_keys = sorted(marker_labels.keys(), key=lambda x: x[x.find("(")+1:x.find(")")])
-for key in marker_sorted_keys:
-    by_label[key] = marker_labels[key]
+# Добавляем транзакции в отсортированном порядке
+for key in sorted_transaction_keys:
+    final_legend_order[key] = transaction_labels[key]
 
-# Add individual B&H asset labels, sorted
-individual_asset_labels = {lbl: hnd for lbl, hnd in label_handle_map.items() if "(B&H)" in lbl}
-asset_sorted_keys = sorted(individual_asset_labels.keys())
-for key in asset_sorted_keys:
-    by_label[key] = individual_asset_labels[key]
-
-ax.legend(by_label.values(), by_label.keys(), loc='upper left', bbox_to_anchor=(1.03, 1), fontsize=9, ncol=1, borderaxespad=0.)
+ax.legend(final_legend_order.values(), final_legend_order.keys(), loc='upper left', bbox_to_anchor=(1.03, 1), fontsize=9, ncol=1, borderaxespad=0.)
 
 # Adjust layout to prevent legend cutoff
 plt.tight_layout(rect=[0, 0, 0.9, 1]) # Adjust the right boundary to make space for legend
@@ -1311,4 +1599,4 @@ plt.savefig('portfolio_comparison_plot.png', bbox_inches='tight', dpi=300) # Add
 
 plt.show() # Optional: Keep show() if you want to see it interactively too
 
-print("--- Визуализация завершена и сохранена в portfolio_comparison_plot.png ---")
+print("\n--- Визуализация завершена и сохранена в portfolio_comparison_plot.png ---")
