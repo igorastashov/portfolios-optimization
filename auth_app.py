@@ -31,6 +31,8 @@ from portfolios_optimization.authentication import (
     update_user_portfolio, get_user_portfolios, get_user_portfolio, get_portfolio_with_quantities,
     get_user_transactions
 )
+# <<< Import the new hypothetical simulator function >>>
+from portfolios_optimization.hypothetical_simulator import run_hypothetical_analysis
 
 # --- Imports needed for Recommendations --- #
 from portfolio_analyzer import ( # Assuming these are defined in portfolio_analyzer.py
@@ -202,7 +204,15 @@ else:
     
     # Меню навигации
     st.sidebar.header("Навигация")
-    page_options = ["Мой кабинет", "Данные и Анализ", "Управление активами", "Единый торговый аккаунт", "Анализ портфеля", "Рекомендации"]
+    page_options = [
+        "Мой кабинет", 
+        "Данные и Анализ", 
+        "Исследование", # Added "Исследование"
+        "Управление активами", 
+        "Единый торговый аккаунт", 
+        "Анализ портфеля", 
+        "Рекомендации"
+    ]
     
     # Устанавливаем индекс для radio на основе текущей активной страницы в состоянии сессии
     try:
@@ -1284,6 +1294,153 @@ else:
         else:
              st.warning(f"Не удалось загрузить данные из 'data/data_compare_eda.csv'. Запустите обновление данных.")
         pass # End of Data & Analysis page block
+
+    # <<< Add block for the new Research page >>>
+    elif st.session_state.active_page == "Исследование":
+        st.header("Исследование альтернативных портфелей")
+        st.markdown("Проанализируйте, как изменилась бы стоимость портфеля, если бы вы инвестировали \n        указанную **начальную сумму** в **выбранный набор активов** в заданный период.") # Modified description
+
+        # --- Настройки Исследования --- #
+        st.subheader("Параметры симуляции")
+        
+        # Load combined data to get available assets (cached)
+        with st.spinner("Загрузка списка доступных активов..."):
+             # Use the same counter as Data & Analysis tab for cache consistency
+             combined_df_research = load_combined_data_cached(st.session_state.get('update_counter', 0)) 
+
+        if combined_df_research.empty:
+            st.error("Не удалось загрузить данные ('data/data_compare_eda.csv'). Исследование невозможно.")
+        else:
+            available_assets_research = combined_df_research.columns.tolist()
+            # Exclude stablecoin from default selection if present
+            default_risky = [a for a in available_assets_research if a != STABLECOIN_ASSET]
+            assets_options = available_assets_research
+            
+            selected_hypothetical_assets = st.multiselect(
+                "Выберите гипотетический набор активов для симуляции:",
+                options=assets_options,
+                # Select first 5 risky assets by default
+                default=default_risky[:min(len(default_risky), 5)], 
+                key="research_asset_select",
+                help=f"Выберите активы для включения в симуляцию. {STABLECOIN_ASSET} будет использоваться для нераспределенных средств."
+            )
+            
+            # --- NEW: Initial Investment Input --- 
+            initial_investment_amount = st.number_input(
+                "Начальная сумма инвестиций (USD):", 
+                min_value=1.0, 
+                value=10000.0, 
+                step=100.0, 
+                format="%.2f",
+                key="research_initial_investment",
+                help="Сумма, с которой начнется симуляция."
+            )
+            # --- End Initial Investment Input ---
+            
+            st.markdown("**Настройки анализа:**")
+            with st.expander("Показать/скрыть параметры анализа"):
+                today_date = datetime.now().date()
+                default_start_date = today_date - timedelta(days=365) 
+                
+                col1_params, col2_params = st.columns(2)
+                with col1_params:
+                     sim_start_date = st.date_input("Начальная дата симуляции", value=default_start_date, max_value=today_date - timedelta(days=1), key="research_start_date")
+                     sim_commission = st.number_input("Комиссия за ребалансировку (%) [0.1% = 0.001]", min_value=0.0, max_value=5.0, value=0.1, step=0.01, format="%.3f", key="research_commission")
+                     sim_rebalance_interval = st.number_input("Интервал ребалансировки (дни)", min_value=1, value=20, step=1, key="research_rebalance_interval", help="Для Equal Weight, Markowitz, Oracle")
+                with col2_params:
+                     sim_end_date = st.date_input("Конечная дата симуляции", value=today_date, min_value=sim_start_date + timedelta(days=1) if sim_start_date else None, key="research_end_date")
+                     sim_bank_apr = st.number_input("Годовая ставка банка (%) [20% = 0.2]", min_value=0.0, max_value=100.0, value=20.0, step=0.5, format="%.1f", key="research_bank_apr")
+                     sim_drl_rebalance_interval = st.number_input("Интервал ребалансировки DRL (дни)", min_value=1, value=20, step=1, key="research_drl_interval", help="Для стратегий A2C, PPO, SAC, DDPG")
+                
+                sim_commission_rate = sim_commission / 100.0
+                sim_bank_apr_rate = sim_bank_apr / 100.0
+
+            if st.button("🚀 Запустить исследование", use_container_width=True, key="research_run_button"):
+                if not selected_hypothetical_assets:
+                     st.warning("Пожалуйста, выберите хотя бы один актив для симуляции.")
+                elif not sim_start_date or not sim_end_date:
+                     st.warning("Пожалуйста, выберите начальную и конечную даты.")
+                elif sim_end_date <= sim_start_date:
+                     st.warning("Конечная дата должна быть позже начальной.")
+                else:
+                     st.session_state['research_results'] = None 
+                     st.session_state['research_figure'] = None
+                     
+                     # --- REMOVED User transaction fetching --- 
+                     # user_transactions = get_user_transactions(st.session_state.username)
+                     # if not user_transactions: ... 
+                     
+                     # Define data and model paths (ensure they are correct)
+                     # These should ideally be relative or configured
+                     data_path_research = "data"
+                     drl_models_dir_research = "notebooks/trained_models"
+                     st.caption(f"Путь к данным: {os.path.abspath(data_path_research)}, Путь к моделям DRL: {os.path.abspath(drl_models_dir_research)}")
+
+                     with st.spinner("Выполнение симуляции... Это может занять время."):
+                         try:
+                             # --- UPDATED Call to the analysis function --- 
+                             results_summary_hypo, fig_hypo = run_hypothetical_analysis(
+                                 # user_transactions_list=user_transactions, # REMOVED
+                                 initial_investment=initial_investment_amount, # ADDED
+                                 hypothetical_assets=selected_hypothetical_assets,
+                                 start_date_str=sim_start_date.strftime('%Y-%m-%d'),
+                                 end_date_str=sim_end_date.strftime('%Y-%m-%d'),
+                                 data_path=data_path_research, # Pass data path
+                                 bank_apr=sim_bank_apr_rate,
+                                 commission_rate=sim_commission_rate,
+                                 rebalance_interval_days=sim_rebalance_interval,
+                                 drl_rebalance_interval_days=sim_drl_rebalance_interval,
+                                 drl_models_dir=drl_models_dir_research # Pass DRL model path
+                             )
+                             # --- End Updated Call ---
+                             
+                             if results_summary_hypo is not None and fig_hypo is not None:
+                                  st.session_state['research_results'] = results_summary_hypo
+                                  st.session_state['research_figure'] = fig_hypo
+                                  st.success("Исследование успешно завершено!", icon="✅")
+                             else:
+                                  # Error messages should come from run_hypothetical_analysis
+                                  st.error("Ошибка во время исследования. Проверьте детали ошибки выше или в консоли.")
+                         except Exception as e:
+                             st.error(f"Непредвиденная ошибка при запуске исследования: {e}")
+                             traceback.print_exc()
+
+            st.markdown("--- ")
+            st.subheader("Результаты исследования")
+            # Display logic remains mostly the same
+            if 'research_results' in st.session_state and st.session_state.research_results is not None:
+                 # Display the DataFrame which now contains formatted metrics
+                 st.dataframe(st.session_state.research_results, use_container_width=True)
+            
+            if 'research_figure' in st.session_state and st.session_state.research_figure is not None:
+                 st.plotly_chart(st.session_state.research_figure, use_container_width=True)
+            # Modify the info message slightly
+            elif 'research_run_button' not in st.session_state or not st.session_state.get('research_run_button', False):
+                 st.info("Выберите активы, укажите начальную сумму и параметры, затем нажмите кнопку 'Запустить исследование' выше.")
+            elif st.session_state.get('research_results') is None and st.session_state.get('research_figure') is None:
+                 # This case means the button was clicked, but the analysis failed or returned None
+                 st.info("Исследование было запущено, но не вернуло результатов. Проверьте параметры и сообщения об ошибках выше.")
+                 
+        pass # End of Research page block
+    
+    # --- Add a final else or elif for any remaining page options or a fallback ---
+    # Example: Check if any other page option from page_options was selected
+    # This handles the case where the last 'elif' doesn't have a following block
+    # Add elif blocks for any remaining pages like "Управление активами", etc.
+    elif st.session_state.active_page == "Управление активами":
+        render_transactions_manager(st.session_state.username, price_data, assets)
+    elif st.session_state.active_page == "Единый торговый аккаунт":
+        # ... (Code for this page)
+        pass # Make sure this page also ends correctly
+    elif st.session_state.active_page == "Анализ портфеля":
+        # ... (Code for this page)
+        pass # Make sure this page also ends correctly
+    elif st.session_state.active_page == "Рекомендации":
+        # ... (Code for this page)
+        pass # Make sure this page also ends correctly
+    else:
+        # Fallback if active_page is somehow invalid 
+        st.error("Выбрана неизвестная страница.")
 
 
 '''
