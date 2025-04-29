@@ -1151,22 +1151,56 @@ def run_portfolio_analysis(
                      'Max Drawdown (%)': max_drawdown * 100, 'Sharpe Ratio': sharpe_ratio
                  }
 
-             results_df = pd.DataFrame(results).T
+             # Create DataFrame from raw numeric results for internal use/LLM
+             # This DataFrame should have strategies as index and metrics as columns
+             metrics_summary_raw = pd.DataFrame(results).T 
+
+             # Create display-formatted DataFrame
+             results_display = {}
+             for strategy_name, metrics_series in metrics_summary_raw.iterrows():
+                 # Use the raw numeric data for formatting
+                 results_display[strategy_name] = {
+                     'Final Value': metrics_series.get('Final Value', np.nan),
+                     'Net Profit': metrics_series.get('Net Profit', np.nan),
+                     'Total Return (%)': metrics_series.get('Total Return (%)', np.nan), # Already percentage in results dict
+                     'Annualized Return (%)': metrics_series.get('Annualized Return (%)', np.nan),
+                     'Annualized Volatility (%)': metrics_series.get('Annualized Volatility (%)', np.nan),
+                     'Max Drawdown (%)': metrics_series.get('Max Drawdown (%)', np.nan),
+                     'Sharpe Ratio': metrics_series.get('Sharpe Ratio', np.nan)
+                 }
+             metrics_summary_display = pd.DataFrame(results_display).T
+             
+             # --- Apply string formatting to the display DataFrame --- 
+             # --- Define format_value helper function HERE --- 
              def format_value(value, format_str):
                  if pd.isna(value): return 'N/A'
                  if np.isinf(value): return 'inf' if value > 0 else '-inf'
                  try: return format_str.format(value)
                  except (ValueError, TypeError): return str(value)
-             results_df_display = results_df.copy()
-             for col, fmt in {'Final Value': '${:,.2f}', 'Net Profit': '${:,.2f}', 'Total Return (%)': '{:.2f}%', 'Annualized Return (%)': '{:.2f}%', 'Annualized Volatility (%)': '{:.2f}%', 'Max Drawdown (%)': '{:.2f}%', 'Sharpe Ratio': '{:.3f}'}.items():
-                  if col in results_df_display.columns: results_df_display[col] = results_df_display[col].apply(lambda x: format_value(x, fmt))
-             print("\nMetrics Calculation Complete:")
-             print(results_df_display)
+             # --- End define format_value --- 
+             
+             metrics_final_display_df = metrics_summary_display.copy()
+             format_dict_display = {
+                 'Final Value': '${:,.2f}', 
+                 'Net Profit': '${:,.2f}', 
+                 'Total Return (%)': '{:.2f}%', 
+                 'Annualized Return (%)': '{:.2f}%', 
+                 'Annualized Volatility (%)': '{:.2f}%', 
+                 'Max Drawdown (%)': '{:.2f}%', 
+                 'Sharpe Ratio': '{:.3f}'
+             }
+             for col, fmt in format_dict_display.items():
+                  if col in metrics_final_display_df.columns:
+                      metrics_final_display_df[col] = metrics_final_display_df[col].apply(lambda x: format_value(x, fmt))
+             
+             print("\nMetrics Calculation Complete (Display Preview):")
+             print(metrics_final_display_df) # Print the display-ready df
         else:
              print("No metrics data available.")
-             results_df_display = pd.DataFrame() # Return empty dataframe
+             metrics_summary_raw = pd.DataFrame() # Return empty df for raw metrics
+             metrics_final_display_df = pd.DataFrame() # Return empty df for display metrics
 
-        # --- Step 5: Visualization (Plotly) ---
+        # --- Step 5: Visualization (Plotly) --- 
         print("\n--- Generating Visualization (Plotly) ---")
         # Set Plotly template
         pio.templates.default = "plotly_dark"
@@ -1300,22 +1334,27 @@ def run_portfolio_analysis(
         fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(128, 128, 128, 0.2)')
         fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(128, 128, 128, 0.2)', tickprefix="$")
 
-        # Remove matplotlib saving/showing
-        # plt.tight_layout(rect=[0, 0, 0.9, 1])
-        # plt.savefig('portfolio_comparison_plot.png', bbox_inches='tight', dpi=300)
-        # plt.show()
-
         print("\n--- Portfolio Analysis Finished Successfully ---")
-        return results_df_display, fig # Return Plotly figure object
+        # --- Return a dictionary with all results --- 
+        return {
+            "metrics": metrics_summary_raw, # CORRECTED: Return the RAW DataFrame
+            "metrics_display": metrics_final_display_df, # Formatted metrics for direct display
+            "portfolio_daily_values": sim_data, # Daily values for plotting and context
+            "figure": fig # Plotly figure object
+        }
 
     except Exception as e:
         print("\n--- ERROR during Portfolio Analysis --- ")
         traceback.print_exc()
-        # Ensure plot object is not returned on error if created
-        fig = None
-        # Close matplotlib plot if it was somehow created before error
-        # plt.close('all') # Close any potential matplotlib figures
-        return None, None # Return None on error
+        fig = None 
+        # Return specific structure on error too
+        return { 
+             "metrics": pd.DataFrame(),
+             "metrics_display": pd.DataFrame(),
+             "portfolio_daily_values": pd.DataFrame(),
+             "figure": None,
+             "error": str(e) 
+        }
 
 # Example usage (if run as standalone script for testing)
 if __name__ == '__main__':

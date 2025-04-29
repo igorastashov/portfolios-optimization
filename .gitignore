@@ -1,3 +1,5 @@
 data/
 __pycache__
 .streamlit/secrets.toml
+FinRobot/
+OAI_CONFIG_LIST

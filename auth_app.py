@@ -52,8 +52,107 @@ from stable_baselines3 import A2C, PPO, SAC, DDPG
 # <<< NEW: Import the analysis function >>>
 from portfolio_analyzer import run_portfolio_analysis
 
+# --- NEW: Imports for FinRobot/Autogen Chatbot ---
+import autogen
+# from finrobot.agents.workflow import SingleAssistant # Old import
+from portfolios_optimization.finrobot_core.workflow import SingleAssistant # New import
+# --- End Imports for FinRobot/Autogen Chatbot ---
+
 # Импорт страниц приложения
 from app_pages import render_account_dashboard, render_transactions_manager
+
+# --- HELPER FUNCTIONS (Moved to top after imports) ---
+
+# --- Function to initialize FinRobot Agent ---
+@st.cache_resource # Cache the agent resource itself
+def initialize_finrobot_agent():
+    """Initializes and returns a FinRobot agent configured with OAI_CONFIG_LIST."""
+    try:
+        llm_config = {
+            "config_list": autogen.config_list_from_json(
+                "OAI_CONFIG_LIST", # Assumes file is in the project root
+                filter_dict={"model": ["gpt-4-0125-preview"]}, # Or whichever model you have in the list
+            ),
+            "timeout": 120,
+            "temperature": 0.2, # Lower temperature for more factual answers
+        }
+        assistant_agent = SingleAssistant(
+            name="Portfolio_Analyst_Assistant",
+            system_message="You are a helpful AI assistant specialized in analyzing portfolio performance data. Answer the user's questions based on the provided portfolio summary. Be concise and clear.",
+            llm_config=llm_config,
+            human_input_mode="NEVER", 
+        )
+        return assistant_agent
+    except FileNotFoundError:
+        st.error("Error: OAI_CONFIG_LIST file not found. Please ensure it exists in the project root.")
+        return None
+    except Exception as e:
+        st.error(f"Error initializing FinRobot agent: {e}")
+        traceback.print_exc() 
+        return None
+
+# --- Function to format analysis results for LLM ---
+def format_portfolio_data_for_llm(analysis_results):
+    """Formats the portfolio analysis results into a string for the LLM agent."""
+    if not analysis_results or not isinstance(analysis_results, dict):
+        return "Нет данных для анализа или неверный формат."
+
+    summary_parts = []
+
+    # Extract metrics (raw numeric data)
+    metrics_df = analysis_results.get('metrics') # Use the raw metrics
+    if metrics_df is not None and isinstance(metrics_df, pd.DataFrame) and not metrics_df.empty:
+        summary_parts.append("**Основные метрики производительности по стратегиям:**")
+        for strategy in metrics_df.index: # Iterate through strategies (index)
+            summary_parts.append(f"\n*Стратегия: {strategy}*" )
+            for metric, value in metrics_df.loc[strategy].items(): # Iterate through metrics for the strategy
+                if isinstance(value, (int, float)):
+                    # Use original metric names from calculation for formatting clues
+                    if any(p in metric.lower() for p in ['cagr', 'return']):
+                        formatted_value = f"{value:.2%}"
+                    elif any(p in metric.lower() for p in ['volatility', 'drawdown']):
+                         formatted_value = f"{value:.2%}"
+                    elif any(r in metric.lower() for r in ['ratio']):
+                         formatted_value = f"{value:.2f}"
+                    else: # Default for Final Value, Net Profit etc.
+                         formatted_value = f"{value:,.2f}"
+                         if 'value' in metric.lower() or 'profit' in metric.lower():
+                              formatted_value = f"${formatted_value}" # Add dollar sign
+                else:
+                     formatted_value = str(value)
+                summary_parts.append(f"  - {metric}: {formatted_value}")
+        summary_parts.append("\n") 
+    else:
+        summary_parts.append("Метрики производительности недоступны.")
+
+    # Extract date range and final values from daily values DataFrame
+    daily_values_df = analysis_results.get('portfolio_daily_values')
+    if daily_values_df is not None and isinstance(daily_values_df, pd.DataFrame) and not daily_values_df.empty:
+        start_date = daily_values_df.index.min().strftime('%Y-%m-%d')
+        end_date = daily_values_df.index.max().strftime('%Y-%m-%d')
+        summary_parts.append(f"**Период анализа:** {start_date} - {end_date}\n")
+
+        summary_parts.append("**Финальная стоимость портфеля по стратегиям:**")
+        final_values = daily_values_df.iloc[-1] # Get last row
+        # Filter only strategy value columns (usually start with 'Value_')
+        strategy_value_cols = [col for col in daily_values_df.columns if col.startswith('Value_')]
+        for strategy_col in strategy_value_cols:
+            # Try to map column name back to display name if possible (e.g., from metrics index)
+            strategy_name = strategy_col.replace('Value_', '').replace('_', ' ') # Basic name cleanup
+            if metrics_df is not None and not metrics_df.empty:
+                 matching_names = [idx for idx in metrics_df.index if strategy_col.endswith(idx.replace(' ','_').replace('DRL ',''))]
+                 if matching_names: strategy_name = matching_names[0]
+            
+            value = final_values.get(strategy_col, np.nan)
+            if pd.notna(value):
+                 summary_parts.append(f"  - {strategy_name}: ${value:,.2f}")
+        summary_parts.append("\n")
+    else:
+        summary_parts.append("Данные о ежедневной стоимости портфеля недоступны.")
+
+    return "\n".join(summary_parts)
+
+# --- END HELPER FUNCTIONS ---
 
 # Конфигурация страницы
 st.set_page_config(
@@ -869,9 +968,13 @@ else:
 
                           # --- Кнопка Запуска --- 
                           if st.button("🚀 Запустить анализ портфеля", use_container_width=True):
+                              # Clear previous results from session state
+                              if 'analysis_results' in st.session_state: del st.session_state['analysis_results']
+                              
                               with st.spinner("Выполняется анализ... Это может занять некоторое время."):
                                   try:
-                                     results_df, fig = run_portfolio_analysis(
+                                     # Call the analysis function, it now returns a dictionary
+                                     analysis_output = run_portfolio_analysis(
                                          transactions_df=transactions_df_analysis,
                                          start_date_str=start_date.strftime('%Y-%m-%d'),
                                          end_date_str=end_date.strftime('%Y-%m-%d'),
@@ -882,32 +985,147 @@ else:
                                          rebalance_interval_days=rebalance_interval,
                                          drl_rebalance_interval_days=drl_rebalance_interval
                                      )
-                                     # Сохраняем результаты в session_state для отображения
-                                     if results_df is not None and fig is not None:
-                                          st.session_state.analysis_results = results_df
-                                          st.session_state.analysis_figure = fig
-                                          st.success("Анализ успешно завершен!")
+                                     
+                                     # Store the entire results dictionary in session state
+                                     st.session_state.analysis_results = analysis_output
+                                     
+                                     # Check for errors returned by the function
+                                     if analysis_output.get("error"):
+                                          st.error(f"Ошибка во время анализа: {analysis_output['error']}")
+                                     elif analysis_output.get("figure") is None or analysis_output.get("metrics_display").empty:
+                                          st.error("Анализ завершился, но не вернул корректных результатов (график или метрики пусты).")
                                      else:
-                                          st.error("Ошибка во время анализа. Проверьте консоль для деталей.")
-                                          if 'analysis_results' in st.session_state: del st.session_state['analysis_results']
-                                          if 'analysis_figure' in st.session_state: del st.session_state['analysis_figure']
+                                          st.success("Анализ успешно завершен!")
+                                          # Rerun to display results correctly
+                                          st.rerun()
+                                          
                                   except Exception as e:
-                                      st.error(f"Произошла непредвиденная ошибка: {e}")
+                                      st.error(f"Произошла непредвиденная ошибка при вызове анализа: {e}")
                                       traceback.print_exc()
+                                      # Clear results on critical error
                                       if 'analysis_results' in st.session_state: del st.session_state['analysis_results']
-                                      if 'analysis_figure' in st.session_state: del st.session_state['analysis_figure']
              except Exception as e:
                  st.error(f"Ошибка при подготовке данных транзакций: {e}")
                  traceback.print_exc()
 
-        # --- Отображение Результатов --- 
-        if 'analysis_results' in st.session_state and st.session_state.analysis_results is not None:
-             st.subheader("Результаты анализа")
-             st.dataframe(st.session_state.analysis_results, use_container_width=True)
-        
-        if 'analysis_figure' in st.session_state and st.session_state.analysis_figure is not None:
-             st.subheader("График сравнения стратегий")
-             st.plotly_chart(st.session_state.analysis_figure, use_container_width=True)
+        if st.session_state.get('analysis_in_progress', False):
+            st.warning("Анализ портфеля выполняется...")
+            st.progress(st.session_state.get('analysis_progress', 0.0))
+            if 'analysis_status' in st.session_state:
+                st.text(st.session_state.analysis_status)
+        else:
+            # Display results if available and no error
+            if 'analysis_results' in st.session_state and not st.session_state.analysis_results.get("error"):
+                results_dict = st.session_state.analysis_results
+                st.subheader("Результаты Анализа Портфеля")
+
+                # Display Plotly figure if it exists
+                fig_analysis = results_dict.get("figure")
+                if fig_analysis:
+                    st.plotly_chart(fig_analysis, use_container_width=True, key="portfolio_analysis_figure") 
+                else:
+                    st.warning("График анализа не найден.") 
+
+                # Display Metrics (using the formatted display DataFrame)
+                st.subheader("Метрики производительности")
+                metrics_display_df = results_dict.get('metrics_display', pd.DataFrame())
+                if not metrics_display_df.empty:
+                    st.dataframe(metrics_display_df, use_container_width=True) # Display the pre-formatted df
+                else:
+                     st.warning("Метрики производительности не рассчитаны.") 
+
+                # ----- NEW: Chatbot Section -----
+                st.divider() # Add a visual separator
+                st.subheader("Задать вопрос о портфеле (AI Агент)")
+
+                # Initialize chat history in session state if it doesn't exist
+                if "messages" not in st.session_state:
+                    st.session_state.messages = []
+
+                # Display chat messages from history on app rerun
+                chat_container = st.container(height=300)
+                with chat_container:
+                    for message in st.session_state.messages:
+                        with st.chat_message(message["role"]):
+                            st.markdown(message["content"])
+
+                # React to user input
+                if prompt := st.chat_input("Спросите что-нибудь о результатах анализа..."):
+                    # Display user message in chat message container
+                    with chat_container:
+                         with st.chat_message("user"):
+                             st.markdown(prompt)
+                    # Add user message to chat history
+                    st.session_state.messages.append({"role": "user", "content": prompt})
+
+                    # ---- Get AI response ----
+                    response = "" # Initialize response variable
+                    try:
+                        # 1. Check if analysis results exist
+                        if 'analysis_results' not in st.session_state or not st.session_state.analysis_results:
+                            response = "Пожалуйста, сначала запустите анализ портфеля, чтобы я мог ответить на ваши вопросы."
+                        else:
+                            # 2. Initialize the agent (cached)
+                            agent = initialize_finrobot_agent()
+                            if agent is None:
+                                response = "Ошибка: Не удалось инициализировать AI-агента. Проверьте конфигурацию и API ключи."
+                            else:
+                                # 3. Format the analysis data for the LLM
+                                analysis_summary = format_portfolio_data_for_llm(st.session_state.analysis_results)
+                                if not analysis_summary or analysis_summary == "Нет данных для анализа.":
+                                     response = "Не удалось получить данные анализа для формирования контекста."
+                                else:
+                                     # 4. Construct the full prompt
+                                     full_prompt = f"""
+                                     Проанализируй следующие данные анализа портфеля:
+                                     ```markdown
+                                     {analysis_summary}
+                                     ```
+
+                                     Основываясь **только** на этой информации, ответь на вопрос пользователя:
+                                     '{prompt}'
+                                     """
+
+                                     # 5. Call the agent
+                                     with st.spinner("🤖 AI-агент думает..."):
+                                          # FinRobot's SingleAssistant might return the response directly
+                                          # or store it in the conversation history. Adjust based on its behavior.
+                                          # Assuming agent.chat returns the final message content:
+                                          agent_reply = agent.chat(full_prompt)
+                                          # Extract the actual response content if needed (depends on agent's return format)
+                                          # This might need adjustment based on how SingleAssistant returns replies
+                                          if isinstance(agent_reply, dict) and 'content' in agent_reply:
+                                              response = agent_reply['content']
+                                          elif isinstance(agent_reply, str):
+                                               response = agent_reply
+                                          else:
+                                               # Fallback: Try to get the last message from the agent's history
+                                               if hasattr(agent, 'agent') and hasattr(agent.agent, 'chat_messages') and agent.agent.chat_messages:
+                                                    last_msg = agent.agent.chat_messages.get(agent.agent.opponent, [])[-1]
+                                                    response = last_msg.get('content', "Не удалось извлечь ответ агента.")
+                                               else:
+                                                   response = "Получен неожиданный формат ответа от агента."
+
+                    except Exception as e:
+                        response = f"Произошла ошибка при обращении к AI: {e}"
+                        traceback.print_exc()
+
+                    # ---- Display AI response ----
+                    with chat_container:
+                         with st.chat_message("assistant"):
+                            st.markdown(response)
+                    # Add assistant response to chat history
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                    # Rerun to ensure the message list is updated cleanly in the container
+                    st.rerun()
+
+            # Display error if analysis failed
+            elif 'analysis_results' in st.session_state and st.session_state.analysis_results.get("error"):
+                 st.error(f"Ошибка во время анализа: {st.session_state.analysis_results['error']}")
+            else:
+                 st.info("Запустите анализ, чтобы увидеть результаты.") 
+
+    # --- End Section: Portfolio Analysis ---
 
     # Страница управления активами и транзакциями
     elif st.session_state.active_page == "Управление активами":
@@ -1442,6 +1660,87 @@ else:
         # Fallback if active_page is somehow invalid 
         st.error("Выбрана неизвестная страница.")
 
+# --- NEW: Function to initialize FinRobot Agent ---
+@st.cache_resource # Cache the agent resource itself
+def initialize_finrobot_agent():
+    """Initializes and returns a FinRobot agent configured with OAI_CONFIG_LIST."""
+    try:
+        llm_config = {
+            "config_list": autogen.config_list_from_json(
+                "OAI_CONFIG_LIST", # Assumes file is in the root directory
+                filter_dict={"model": ["gpt-4-0125-preview"]}, # Or whichever model you have in the list
+            ),
+            "timeout": 120,
+            "temperature": 0.2, # Lower temperature for more factual answers
+        }
+        # Create a basic assistant agent
+        # You might want to customize the system message later
+        assistant_agent = SingleAssistant(
+            name="Portfolio_Analyst_Assistant",
+            llm_config=llm_config,
+            system_message="You are a helpful AI assistant specialized in analyzing portfolio performance data. Answer the user's questions based on the provided portfolio summary. Be concise and clear.",
+            human_input_mode="NEVER", # Agent runs without asking for human input during its process
+        )
+        return assistant_agent
+    except FileNotFoundError:
+        st.error("Error: OAI_CONFIG_LIST file not found. Please ensure it exists in the project root.")
+        return None
+    except Exception as e:
+        st.error(f"Error initializing FinRobot agent: {e}")
+        traceback.print_exc() # Print detailed traceback to console/log
+        return None
+# --- End Function to initialize FinRobot Agent ---
+
+# --- NEW: Function to format analysis results for LLM ---
+def format_portfolio_data_for_llm(analysis_results):
+    """Formats the portfolio analysis results into a string for the LLM agent."""
+    if not analysis_results:
+        return "Нет данных для анализа."
+
+    summary_parts = []
+
+    # Extract metrics
+    metrics_df = analysis_results.get('metrics')
+    if metrics_df is not None and not metrics_df.empty:
+        summary_parts.append("**Основные метрики производительности по стратегиям:**")
+        # Convert metrics DataFrame to string format
+        # We can iterate through columns (strategies) or rows (metrics)
+        # Let's format by strategy for clarity
+        for strategy in metrics_df.columns:
+            summary_parts.append(f"\n*Стратегия: {strategy}*" )
+            for metric, value in metrics_df[strategy].items():
+                # Format based on metric type if possible (e.g., percentages)
+                if isinstance(value, (int, float)):
+                    if any(p in metric.lower() for p in ['%', 'cagr', 'drawdown', 'volatility', 'return']):
+                        formatted_value = f"{value:.2%}"
+                    elif any(r in metric.lower() for r in ['ratio']):
+                         formatted_value = f"{value:.2f}"
+                    else:
+                         formatted_value = f"{value:,.2f}" # General float formatting
+                else:
+                     formatted_value = str(value)
+                summary_parts.append(f"  - {metric}: {formatted_value}")
+        summary_parts.append("\n") # Add spacing
+    else:
+        summary_parts.append("Метрики производительности недоступны.")
+
+    # Extract date range and final values from daily values DataFrame
+    daily_values_df = analysis_results.get('portfolio_daily_values')
+    if daily_values_df is not None and not daily_values_df.empty:
+        start_date = daily_values_df.index.min().strftime('%Y-%m-%d')
+        end_date = daily_values_df.index.max().strftime('%Y-%m-%d')
+        summary_parts.append(f"**Период анализа:** {start_date} - {end_date}\n")
+
+        summary_parts.append("**Финальная стоимость портфеля по стратегиям:**")
+        final_values = daily_values_df.iloc[-1]
+        for strategy, value in final_values.items():
+             summary_parts.append(f"  - {strategy}: ${value:,.2f}")
+        summary_parts.append("\n")
+    else:
+        summary_parts.append("Данные о ежедневной стоимости портфеля недоступны.")
+
+    return "\n".join(summary_parts)
+# --- End Function to format analysis results for LLM ---
 
 '''
 poetry run streamlit run auth_app.py
