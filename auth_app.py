@@ -66,29 +66,44 @@ from app_pages import render_account_dashboard, render_transactions_manager
 # --- Function to initialize FinRobot Agent ---
 @st.cache_resource # Cache the agent resource itself
 def initialize_finrobot_agent():
-    """Initializes and returns a FinRobot agent configured with OAI_CONFIG_LIST."""
+    """Initializes and returns a FinRobot agent configured with a local LLM server."""
     try:
+        # --- MODIFIED: Configuration for local LLM ---
+        local_model_name = "llama3" # Change if your model name in Ollama/LM Studio is different
+        local_api_base = "http://localhost:11434/v1" # Change if your local server runs on a different address/port
+
         llm_config = {
-            "config_list": autogen.config_list_from_json(
-                "OAI_CONFIG_LIST", # Assumes file is in the project root
-                filter_dict={"model": ["gpt-4-0125-preview"]}, # Or whichever model you have in the list
-            ),
-            "timeout": 120,
-            "temperature": 0.2, # Lower temperature for more factual answers
+            "config_list": [
+                {
+                    "model": local_model_name,
+                    "base_url": local_api_base,
+                    "api_key": "ollama", # Often required, but value doesn't matter for local non-auth servers
+                }
+            ],
+            "timeout": 300, # Increase timeout for potentially slower local models
+            "temperature": 0.2,
         }
+        # --- END MODIFICATION ---
+
         assistant_agent = SingleAssistant(
             name="Portfolio_Analyst_Assistant",
-            system_message="You are a helpful AI assistant specialized in analyzing portfolio performance data. Answer the user's questions based on the provided portfolio summary. Be concise and clear.",
+            # --- MODIFIED System Message ---
+            system_message="""Ты — ИИ-ассистент, эксперт по анализу инвестиционных портфелей. \
+Твоя задача — отвечать на вопросы пользователя, основываясь ИСКЛЮЧИТЕЛЬНО на предоставленных ниже данных анализа портфеля. \
+Отвечай всегда на РУССКОМ языке. Будь точным, кратким и профессиональным.""",
+            # --- END MODIFICATION ---
             llm_config=llm_config,
-            human_input_mode="NEVER", 
+            human_input_mode="NEVER",
         )
+        st.success(f"FinRobot agent initialized with local model: {local_model_name} at {local_api_base}") # Add success message
         return assistant_agent
-    except FileNotFoundError:
+    except FileNotFoundError: # Keep this for OAI_CONFIG_LIST just in case, though not used now
         st.error("Error: OAI_CONFIG_LIST file not found. Please ensure it exists in the project root.")
         return None
     except Exception as e:
-        st.error(f"Error initializing FinRobot agent: {e}")
-        traceback.print_exc() 
+        st.error(f"Error initializing FinRobot agent with local LLM: {e}")
+        traceback.print_exc()
+        st.error(f"Ensure your local LLM server (e.g., Ollama, LM Studio) is running and accessible at {local_api_base} and the model '{local_model_name}' is available.") # Add helpful error message
         return None
 
 # --- Function to format analysis results for LLM ---
@@ -1077,14 +1092,7 @@ else:
                                 else:
                                      # 4. Construct the full prompt
                                      full_prompt = f"""
-                                     Проанализируй следующие данные анализа портфеля:
-                                     ```markdown
-                                     {analysis_summary}
-                                     ```
-
-                                     Основываясь **только** на этой информации, ответь на вопрос пользователя:
-                                     '{prompt}'
-                                     """
+                                     Ты — эксперт по анализу портфелей.\n                                     Проанализируй следующие данные анализа портфеля:\n                                     ```markdown\n                                     {analysis_summary}\n                                     ```\n\n                                     Основываясь **строго и только** на этих данных, ответь на следующий вопрос пользователя **на русском языке**:\n                                     '{prompt}'\n                                     """
 
                                      # 5. Call the agent
                                      with st.spinner("🤖 AI-агент думает..."):

@@ -154,10 +154,8 @@ class SingleAssistant(SingleAssistantBase):
             name="User_Proxy",
             is_termination_msg=is_termination_msg,
             human_input_mode=human_input_mode,
-            max_consecutive_auto_reply=max_consecutive_auto_reply,
+            max_consecutive_auto_reply=0,
             code_execution_config=code_execution_config,
-            # Do not pass llm_config to UserProxyAgent unless it needs to run LLM calls itself
-            # **kwargs, # Pass only UserProxyAgent relevant kwargs if needed
         )
         # Register the proxy with the assistant (FinRobot handles this)
         self.assistant.register_proxy(self.user_proxy)
