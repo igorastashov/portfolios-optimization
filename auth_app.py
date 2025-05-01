@@ -165,6 +165,8 @@ def format_portfolio_data_for_llm(analysis_results):
     else:
         summary_parts.append("Данные о ежедневной стоимости портфеля недоступны.")
 
+    # <<< REMOVED holdings formatting logic >>>
+
     return "\n".join(summary_parts)
 
 # --- END HELPER FUNCTIONS ---
@@ -1087,12 +1089,155 @@ else:
                             else:
                                 # 3. Format the analysis data for the LLM
                                 analysis_summary = format_portfolio_data_for_llm(st.session_state.analysis_results)
+
+                                # <<< START NEW: Fetch and format user holdings >>>
+                                user_holdings_str = "Данные о текущих активах пользователя недоступны."
+                                try:
+                                    portfolio_data = get_portfolio_with_quantities(st.session_state.username)
+                                    if portfolio_data and portfolio_data.get("quantities"):
+                                        holdings = portfolio_data["quantities"]
+                                        # Use latest prices to calculate value (optional but nice)
+                                        total_value = 0
+                                        holdings_details = []
+                                        latest_prices = price_data.iloc[-1] if not price_data.empty else None
+                                        
+                                        for asset, quantity in holdings.items():
+                                            if quantity > 0:
+                                                detail = f"{asset}: {quantity:.4f}" # Format quantity
+                                                if latest_prices is not None and asset in latest_prices.index:
+                                                     value = quantity * latest_prices[asset]
+                                                     detail += f" (Стоимость: ${value:,.2f})"
+                                                     total_value += value
+                                                holdings_details.append(detail)
+
+                                        if holdings_details:
+                                             user_holdings_str = "**Текущие активы пользователя:**\\n"
+                                             user_holdings_str += "\\n".join([f"- {d}" for d in holdings_details])
+                                             if latest_prices is not None:
+                                                 user_holdings_str += f"\\n\\n**Общая расчетная стоимость портфеля:** ${total_value:,.2f}"
+                                        else:
+                                             user_holdings_str = "У пользователя нет активов в портфеле."
+                                    else:
+                                        user_holdings_str = "У пользователя нет активов в портфеле."
+                                except Exception as e:
+                                     st.warning(f"Не удалось загрузить текущие активы пользователя: {e}")
+                                     # Keep the default "unavailable" message
+                                # <<< END NEW: Fetch and format user holdings >>>
+
+                                # <<< START NEW: Fetch and format transaction history >>>
+                                user_transactions_summary_str = "История транзакций пользователя недоступна."
+                                try:
+                                    transactions_list = get_user_transactions(st.session_state.username)
+                                    if transactions_list:
+                                        # Convert to DataFrame for easier manipulation and sorting
+                                        transactions_df = pd.DataFrame(transactions_list)
+                                        transactions_df['date'] = pd.to_datetime(transactions_df['date'])
+                                        transactions_df = transactions_df.sort_values(by='date')
+                                        
+                                        num_transactions = len(transactions_df)
+                                        first_date = transactions_df['date'].min().strftime('%Y-%m-%d %H:%M')
+                                        last_date = transactions_df['date'].max().strftime('%Y-%m-%d %H:%M')
+                                        
+                                        summary_lines = [
+                                            f"**История транзакций пользователя:**",
+                                            f"- Всего транзакций: {num_transactions}",
+                                            f"- Период: с {first_date} по {last_date}"
+                                        ]
+                                        
+                                        # Function to format a transaction row
+                                        def format_tx(row):
+                                            action = "Покупка" if row.get('type') == 'buy' else "Продажа"
+                                            asset = row.get('asset', 'N/A')
+
+                                            # Format quantity safely
+                                            try:
+                                                quantity_num = float(row['quantity'])
+                                                quantity_str = f"{quantity_num:.4f}"
+                                            except (ValueError, TypeError, KeyError):
+                                                quantity_str = str(row.get('quantity', 'N/A'))
+
+                                            # Format price safely
+                                            try:
+                                                price_num = float(row['price'])
+                                                price_str = f"${price_num:,.2f}"
+                                            except (ValueError, TypeError, KeyError):
+                                                price_str = str(row.get('price', 'N/A'))
+
+                                            # Format cost safely (only for 'buy')
+                                            cost_str = ""
+                                            if action == 'Покупка':
+                                                total_cost_val = row.get('total_cost') # Get value or None
+                                                try:
+                                                    if total_cost_val is not None:
+                                                        cost_num = float(total_cost_val)
+                                                        cost_str = f" на сумму ${cost_num:,.2f}"
+                                                    else:
+                                                        # If total_cost is None or missing, try calculating from qty*price + fee
+                                                        try:
+                                                             fee = float(row.get('fee', 0))
+                                                             calculated_cost = float(row['quantity']) * float(row['price']) + fee
+                                                             cost_str = f" на сумму ${calculated_cost:,.2f}"
+                                                        except (ValueError, TypeError, KeyError):
+                                                             cost_str = " на сумму N/A" # Fallback if calculation fails
+                                                except (ValueError, TypeError):
+                                                    cost_str = f" на сумму {str(total_cost_val)}" # Show original if not float
+
+                                            # Format date safely
+                                            try:
+                                                # Assuming 'date' is already a datetime object from earlier conversion
+                                                date_str = row['date'].strftime('%Y-%m-%d') 
+                                            except (AttributeError, KeyError, TypeError):
+                                                date_str = str(row.get('date', 'N/A'))
+                                                
+                                            return f"{date_str}: {action} {quantity_str} {asset} @ {price_str}{cost_str}"
+                                            
+                                        if num_transactions > 0:
+                                            summary_lines.append("\n*Недавние транзакции:*" )
+                                            # Show last 3 (or fewer if less than 3 total)
+                                            for i, row in transactions_df.tail(min(num_transactions, 3)).iterrows():
+                                                summary_lines.append(f"  - {format_tx(row)}")
+                                        if num_transactions > 6: # Show first 3 only if there are more than 6 total to avoid redundancy
+                                            summary_lines.append("\n*Первые транзакции:*" )
+                                            for i, row in transactions_df.head(3).iterrows():
+                                                 summary_lines.append(f"  - {format_tx(row)}")
+                                                 
+                                        user_transactions_summary_str = "\n".join(summary_lines)
+                                        
+                                    else:
+                                        user_transactions_summary_str = "У пользователя нет истории транзакций."
+                                except Exception as e:
+                                    st.warning(f"Не удалось загрузить или обработать историю транзакций: {e}")
+                                    # Keep the default "unavailable" message
+                                # <<< END NEW: Fetch and format transaction history >>>
+
                                 if not analysis_summary or analysis_summary == "Нет данных для анализа.":
                                      response = "Не удалось получить данные анализа для формирования контекста."
                                 else:
                                      # 4. Construct the full prompt
+                                     # <<< MODIFIED: Include holdings and transaction summary in the prompt >>>
                                      full_prompt = f"""
-                                     Ты — эксперт по анализу портфелей.\n                                     Проанализируй следующие данные анализа портфеля:\n                                     ```markdown\n                                     {analysis_summary}\n                                     ```\n\n                                     Основываясь **строго и только** на этих данных, ответь на следующий вопрос пользователя **на русском языке**:\n                                     '{prompt}'\n                                     """
+                                     Ты — эксперт по анализу инвестиционных портфелей и предоставлению рекомендаций.\n
+                                     Основываясь **строго и только** на предоставленных ниже данных (анализ производительности, текущие активы и история транзакций), ответь на вопрос пользователя **на русском языке**.
+
+                                     **1. Результаты последнего анализа производительности портфеля:**
+                                     ```markdown
+                                     {analysis_summary}
+                                     ```
+
+                                     **2. Текущие активы пользователя в портфеле:**
+                                     ```markdown
+                                     {user_holdings_str}
+                                     ```
+                                     
+                                     **3. Краткая история транзакций пользователя:**
+                                     ```markdown
+                                     {user_transactions_summary_str}
+                                     ```
+
+                                     **Вопрос пользователя:**
+                                     '{prompt}'
+                                     """
+                                     # <<< END MODIFICATION >>>
 
                                      # 5. Call the agent
                                      with st.spinner("🤖 AI-агент думает..."):
@@ -1702,50 +1847,63 @@ def initialize_finrobot_agent():
 # --- NEW: Function to format analysis results for LLM ---
 def format_portfolio_data_for_llm(analysis_results):
     """Formats the portfolio analysis results into a string for the LLM agent."""
-    if not analysis_results:
-        return "Нет данных для анализа."
+    if not analysis_results or not isinstance(analysis_results, dict):
+        return "Нет данных для анализа или неверный формат."
 
     summary_parts = []
 
-    # Extract metrics
-    metrics_df = analysis_results.get('metrics')
-    if metrics_df is not None and not metrics_df.empty:
+    # Extract metrics (raw numeric data)
+    metrics_df = analysis_results.get('metrics') # Use the raw metrics
+    if metrics_df is not None and isinstance(metrics_df, pd.DataFrame) and not metrics_df.empty:
         summary_parts.append("**Основные метрики производительности по стратегиям:**")
-        # Convert metrics DataFrame to string format
-        # We can iterate through columns (strategies) or rows (metrics)
-        # Let's format by strategy for clarity
-        for strategy in metrics_df.columns:
+        for strategy in metrics_df.index: # Iterate through strategies (index)
             summary_parts.append(f"\n*Стратегия: {strategy}*" )
-            for metric, value in metrics_df[strategy].items():
-                # Format based on metric type if possible (e.g., percentages)
+            for metric, value in metrics_df.loc[strategy].items(): # Iterate through metrics for the strategy
                 if isinstance(value, (int, float)):
-                    if any(p in metric.lower() for p in ['%', 'cagr', 'drawdown', 'volatility', 'return']):
+                    # Use original metric names from calculation for formatting clues
+                    if any(p in metric.lower() for p in ['cagr', 'return']):
                         formatted_value = f"{value:.2%}"
+                    elif any(p in metric.lower() for p in ['volatility', 'drawdown']):
+                         formatted_value = f"{value:.2%}"
                     elif any(r in metric.lower() for r in ['ratio']):
                          formatted_value = f"{value:.2f}"
-                    else:
-                         formatted_value = f"{value:,.2f}" # General float formatting
+                    else: # Default for Final Value, Net Profit etc.
+                         formatted_value = f"{value:,.2f}"
+                         if 'value' in metric.lower() or 'profit' in metric.lower():
+                              formatted_value = f"${formatted_value}" # Add dollar sign
                 else:
                      formatted_value = str(value)
                 summary_parts.append(f"  - {metric}: {formatted_value}")
-        summary_parts.append("\n") # Add spacing
+        summary_parts.append("\n") 
     else:
         summary_parts.append("Метрики производительности недоступны.")
 
     # Extract date range and final values from daily values DataFrame
     daily_values_df = analysis_results.get('portfolio_daily_values')
-    if daily_values_df is not None and not daily_values_df.empty:
+    if daily_values_df is not None and isinstance(daily_values_df, pd.DataFrame) and not daily_values_df.empty:
         start_date = daily_values_df.index.min().strftime('%Y-%m-%d')
         end_date = daily_values_df.index.max().strftime('%Y-%m-%d')
         summary_parts.append(f"**Период анализа:** {start_date} - {end_date}\n")
 
         summary_parts.append("**Финальная стоимость портфеля по стратегиям:**")
-        final_values = daily_values_df.iloc[-1]
-        for strategy, value in final_values.items():
-             summary_parts.append(f"  - {strategy}: ${value:,.2f}")
+        final_values = daily_values_df.iloc[-1] # Get last row
+        # Filter only strategy value columns (usually start with 'Value_')
+        strategy_value_cols = [col for col in daily_values_df.columns if col.startswith('Value_')]
+        for strategy_col in strategy_value_cols:
+            # Try to map column name back to display name if possible (e.g., from metrics index)
+            strategy_name = strategy_col.replace('Value_', '').replace('_', ' ') # Basic name cleanup
+            if metrics_df is not None and not metrics_df.empty:
+                 matching_names = [idx for idx in metrics_df.index if strategy_col.endswith(idx.replace(' ','_').replace('DRL ',''))]
+                 if matching_names: strategy_name = matching_names[0]
+            
+            value = final_values.get(strategy_col, np.nan)
+            if pd.notna(value):
+                 summary_parts.append(f"  - {strategy_name}: ${value:,.2f}")
         summary_parts.append("\n")
     else:
         summary_parts.append("Данные о ежедневной стоимости портфеля недоступны.")
+
+    # <<< REMOVED holdings formatting logic >>>
 
     return "\n".join(summary_parts)
 # --- End Function to format analysis results for LLM ---
