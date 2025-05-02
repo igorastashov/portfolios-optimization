@@ -1816,143 +1816,217 @@ else:
 
                 # --- Analysis Button --- 
                 if st.button("📰 Анализировать новости", key="analyze_news_button"):
+                    # Insert the new code here:
                     if selected_asset_name_news: # Check if asset name is resolved
                         # Use ticker for display, asset name for fetching
                         spinner_text = f"Получение и анализ {num_articles_to_analyze} новостей для {selected_asset_ticker_news} ({news_start_date} - {news_end_date})..."
                         with st.spinner(spinner_text):
-                            # --- UPDATED Call: Pass dates AND num_articles to fetch function --- 
-                            # 1. Fetch news (Real data now)
+                            # 1. Fetch news
                             news_fetch_result = fetch_news_from_csv(
                                 selected_asset_name_news, # Pass asset name (e.g., 'btc')
                                 start_date=news_start_date,
                                 end_date=news_end_date,
                                 num_articles=num_articles_to_analyze # Pass user-defined limit
                             )
-                            
+
                             if news_fetch_result:
                                 news_text = news_fetch_result["text"]
                                 actual_start_date = news_fetch_result["start_date"]
                                 actual_end_date = news_fetch_result["end_date"]
                                 num_articles_fetched = news_fetch_result["count"]
-                                
-                                st.markdown(f"**Анализ {num_articles_fetched} новостей ({actual_start_date.strftime('%Y-%m-%d')} - {actual_end_date.strftime('%Y-%m-%d')}):**")
-                                st.text_area("Текст сводок:", news_text, height=200, disabled=True, key="news_display_area")
-                                st.markdown("--- ")
-                                
-                                # Proceed with analysis only if news text was fetched
-                                try:
-                                    # --- Import pipeline --- 
-                                    from transformers import pipeline
-                                    import torch
-                                    from collections import Counter # <<< Added Counter for aggregation
-                                    
-                                    # --- Display Sentiment and NER side-by-side --- 
-                                    col1_nlp, col2_nlp = st.columns(2)
-        
-                                    # 2. Analyze Sentiment
-                                    with col1_nlp:
-                                        st.markdown("**Анализ тональности (по статьям):**")
-                                        individual_summaries = news_fetch_result.get("summaries", [])
-                                        if individual_summaries:
-                                            try:
-                                                print(f"DEBUG: Starting sentiment analysis for {len(individual_summaries)} summaries.") # DEBUG
-                                                sentiment_pipeline = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english", device=0 if torch.cuda.is_available() else -1, truncation=True) 
-                                                
-                                                all_sentiments = []
-                                                print("DEBUG: Sentiment pipeline created. Calling pipeline...") # DEBUG
-                                                with st.spinner(f"Анализ тональности {len(individual_summaries)} статей..."):
-                                                    # Pass list directly for batch processing
-                                                    sentiment_results_list = sentiment_pipeline([str(s) for s in individual_summaries if pd.notna(s)])
-                                                print(f"DEBUG: Sentiment pipeline returned: {sentiment_results_list}") # DEBUG
-                                                
-                                                # Process results
-                                                if sentiment_results_list:
-                                                    for result in sentiment_results_list:
-                                                        label = result.get('label', 'UNKNOWN')
-                                                        all_sentiments.append(label)
-                                                        
-                                                # Aggregate results
-                                                if all_sentiments:
-                                                    sentiment_counts = Counter(all_sentiments)
-                                                    positive_count = sentiment_counts.get('POSITIVE', 0)
-                                                    total_analyzed = len(all_sentiments)
-                                                    positive_percentage = (positive_count / total_analyzed) * 100 if total_analyzed > 0 else 0
-                                                    print(f"DEBUG: Sentiment counts: {sentiment_counts}, Positive %: {positive_percentage:.2f}") # DEBUG
-                                                    
-                                                    # --- UPDATED: Display counts and percentage --- 
-                                                    sentiment_summary_str = ", ".join([f"{label}: {count}" for label, count in sentiment_counts.items()])
-                                                    st.metric("Общая тональность", f"{positive_percentage:.1f}% Positive", delta=sentiment_summary_str, delta_color="off")
-                                                else:
-                                                     print("DEBUG: No sentiments extracted from results.") # DEBUG
-                                                     st.info("Не удалось определить тональность для статей.")
-                                                del sentiment_pipeline 
-                                            except Exception as e_sent:
-                                                print(f"ERROR in Sentiment Analysis: {e_sent}") # DEBUG
-                                                st.error(f"Ошибка анализа тональности: {e_sent}")
-                                                st.caption("Убедитесь, что библиотеки transformers, torch/tensorflow, sentencepiece установлены.")
-                                        else:
-                                             print("DEBUG: No summaries available for sentiment analysis.") # DEBUG
-                                             st.info("Нет сводок для анализа тональности.")
-                                             
-                                    # 3. Summarize Text (Optional) - REMOVED
-                                    
-                                    # 4. Extract Key Information (NER)
-                                    with col2_nlp: 
-                                        st.markdown("**Извлеченные сущности (NER) (из всех сводок):**")
-                                        try:
-                                            if news_text:
-                                                print("DEBUG: Starting NER analysis.") # DEBUG
-                                                ner_pipeline = pipeline("ner", model="dbmdz/bert-large-cased-finetuned-conll03-english", grouped_entities=True, device=0 if torch.cuda.is_available() else -1)
-                                                print("DEBUG: NER pipeline created. Calling pipeline...") # DEBUG
-                                                ner_results = ner_pipeline(news_text)
-                                                print(f"DEBUG: NER pipeline returned: {len(ner_results)} entities") # DEBUG
-                                                
-                                                if ner_results:
-                                                    # --- ADDED: Calculate and display entity frequency --- 
-                                                    entity_words = [(entity['entity_group'], entity['word']) for entity in ner_results]
-                                                    entity_counts = Counter(entity_words)
-                                                    
-                                                    st.write("**Наиболее частые сущности:**")
-                                                    top_n = 5
-                                                    # Display Top N ORG
-                                                    top_org = [f"{word} ({count})" for (group, word), count in entity_counts.most_common() if group == 'ORG'][:top_n]
-                                                    if top_org:
-                                                         st.info(f"ORG: {'; '.join(top_org)}")
-                                                    # Display Top N PER
-                                                    top_per = [f"{word} ({count})" for (group, word), count in entity_counts.most_common() if group == 'PER'][:top_n]
-                                                    if top_per:
-                                                         st.info(f"PER: {'; '.join(top_per)}")
-                                                    # Display Top N LOC
-                                                    top_loc = [f"{word} ({count})" for (group, word), count in entity_counts.most_common() if group == 'LOC'][:top_n]
-                                                    if top_loc:
-                                                         st.info(f"LOC: {'; '.join(top_loc)}")
-                                                    # --- END: Entity frequency --- 
-                                                    
-                                                    # Display all entities in expander
-                                                    formatted_entities = [f"{entity['word']} ({entity['entity_group']}, {entity['score']:.2f})" for entity in ner_results]
-                                                    print(f"DEBUG: Formatted NER entities: {len(formatted_entities)}") # DEBUG
-                                                    with st.expander(f"Показать все {len(ner_results)} сущности", expanded=False):
-                                                         st.info("; ".join(formatted_entities))
-                                                else:
-                                                    print("DEBUG: No NER entities found.") # DEBUG
-                                                    st.write("Сущности не найдены.")
-                                                del ner_pipeline 
-                                            else:
-                                                 print("DEBUG: No news_text available for NER analysis.") # DEBUG
-                                                 st.info("Нет текста для извлечения сущностей.")
-                                        except Exception as e_ner:
-                                            print(f"ERROR in NER Analysis: {e_ner}") # DEBUG
-                                            st.error(f"Ошибка извлечения сущностей: {e_ner}")
-                                            st.caption("Убедитесь, что библиотеки transformers, torch/tensorflow, sentencepiece установлены.")
+                                summaries = news_fetch_result.get("summaries", []) # Get summaries here
 
-                                except Exception as e:
-                                    print(f"ERROR in Main Analysis Block: {e}") # DEBUG
-                                    st.error(f"Произошла ошибка при анализе новостей: {e}")
-                                    traceback.print_exc()
-                            # else: # Error or no news found, message handled within fetch_news_from_csv
-                            #    pass 
+                                st.markdown(f"**Анализ {num_articles_fetched} новостей ({actual_start_date.strftime('%Y-%m-%d')} - {actual_end_date.strftime('%Y-%m-%d')}):**")
+                                st.text_area("Текст сводок (первые 1000 символов):", news_text[:1000]+"..." if len(news_text) > 1000 else news_text, height=150, disabled=True, key="news_display_area_short")
+                                st.markdown("--- ")
+
+                                # 2. Sentiment Analysis
+                                @st.cache_resource # Cache the pipeline
+                                def get_sentiment_pipeline():
+                                    model_name = "ProsusAI/finbert" # Or another financial sentiment model
+                                    try:
+                                        device = 0 if torch.cuda.is_available() else -1
+                                        sentiment_pipeline = pipeline("sentiment-analysis", model=model_name, device=device)
+                                        print(f"Sentiment analysis pipeline loaded: {model_name} on device {'cuda:0' if device==0 else 'cpu'}")
+                                        return sentiment_pipeline
+                                    except Exception as e:
+                                        st.error(f"Error loading sentiment analysis pipeline '{model_name}': {e}")
+                                        st.warning("Falling back to default sentiment pipeline.")
+                                        try:
+                                            device = 0 if torch.cuda.is_available() else -1
+                                            sentiment_pipeline = pipeline("sentiment-analysis", device=device)
+                                            print(f"Default sentiment analysis pipeline loaded on device {'cuda:0' if device==0 else 'cpu'}")
+                                            return sentiment_pipeline
+                                        except Exception as e_fallback:
+                                            st.error(f"Error loading default sentiment pipeline: {e_fallback}")
+                                            return None
+
+                                sentiment_pipeline = get_sentiment_pipeline()
+
+                                if summaries and sentiment_pipeline:
+                                    with st.spinner("Анализ тональности новостей..."):
+                                        try:
+                                            max_summaries_for_analysis = 100 # Limit for performance
+                                            if len(summaries) > max_summaries_for_analysis:
+                                                st.warning(f"Анализируем только последние {max_summaries_for_analysis} из {len(summaries)} новостей для ускорения.")
+                                                summaries_to_analyze = summaries[:max_summaries_for_analysis]
+                                            else:
+                                                summaries_to_analyze = summaries
+
+                                            valid_summaries = [str(s) for s in summaries_to_analyze if pd.notna(s) and isinstance(s, str)]
+                                            if not valid_summaries:
+                                                 st.warning("Нет валидных текстов новостей для анализа тональности.")
+                                            else:
+                                                results = sentiment_pipeline(valid_summaries)
+
+                                                sentiment_scores = []
+                                                positive_count = 0
+                                                negative_count = 0
+                                                neutral_count = 0
+                                                news_with_sentiment = []
+
+                                                for summary, result in zip(valid_summaries, results):
+                                                    label = result['label'].upper() # Ensure uppercase
+                                                    score = result['score']
+                                                    numeric_score = 0.0
+
+                                                    if label == 'POSITIVE' or label == 'POS' or label == 'LABEL_1':
+                                                        positive_count += 1
+                                                        numeric_score = score
+                                                    elif label == 'NEGATIVE' or label == 'NEG' or label == 'LABEL_0':
+                                                        negative_count += 1
+                                                        numeric_score = -score
+                                                    else:
+                                                        neutral_count += 1
+                                                        numeric_score = 0.0
+
+                                                    sentiment_scores.append(numeric_score)
+                                                    news_with_sentiment.append({
+                                                        "summary": summary,
+                                                        "label": label,
+                                                        "score": numeric_score
+                                                    })
+
+                                                total_analyzed = len(sentiment_scores)
+                                                if total_analyzed > 0:
+                                                    avg_score = sum(sentiment_scores) / total_analyzed
+                                                    positive_pct = (positive_count / total_analyzed) * 100
+                                                    negative_pct = (negative_count / total_analyzed) * 100
+                                                    neutral_pct = (neutral_count / total_analyzed) * 100
+
+                                                    st.markdown("**Общая тональность:**")
+                                                    col1, col2, col3, col4 = st.columns(4)
+                                                    col1.metric("Positive", f"{positive_pct:.1f}%", f"{positive_count} шт.")
+                                                    col2.metric("Negative", f"{negative_pct:.1f}%", f"{negative_count} шт.", delta_color="inverse")
+                                                    col3.metric("Neutral", f"{neutral_pct:.1f}%", f"{neutral_count} шт.", delta_color="off")
+                                                    col4.metric("Средний балл", f"{avg_score:.2f}", help="-1 (Neg) до +1 (Pos)")
+
+                                                    if st.button("💬 Сгенерировать сводку AI", key="generate_ai_summary"):
+                                                        # Add check for agent initialization result here
+                                                        finrobot_agent = initialize_finrobot_agent()
+                                                        if finrobot_agent:
+                                                            with st.spinner("🤖 Llama3 генерирует сводку..."):
+                                                                try:
+                                                                    n_examples = 3
+                                                                    news_with_sentiment.sort(key=lambda x: x['score'], reverse=True)
+                                                                    positive_examples = [item['summary'] for item in news_with_sentiment if item['score'] > 0][:n_examples]
+                                                                    negative_examples = [item['summary'] for item in news_with_sentiment if item['score'] < 0][::-1][:n_examples]
+
+                                                                    pos_examples_str = "\n".join([f"- {ex[:150]}..." for ex in positive_examples]) if positive_examples else "Нет ярких позитивных примеров"
+                                                                    neg_examples_str = "\n".join([f"- {ex[:150]}..." for ex in negative_examples]) if negative_examples else "Нет ярких негативных примеров"
+
+                                                                    # Corrected f-string format for llama_prompt
+                                                                    llama_prompt = (
+                                                                        f"Ты - финансовый аналитик. Проанализируй статистику тональности и примеры новостей по активу {selected_asset_ticker_news}. "
+                                                                        f"Сформируй краткую сводку (2-4 предложения) на русском языке, объясняющую общую тональность новостного фона и ключевые факторы "
+                                                                        f"(события/темы из новостей, если возможно их уловить), влияющие на позитивные и негативные настроения.\n\n"
+                                                                        f"**Общая статистика тональности ({actual_start_date.strftime('%Y-%m-%d')} - {actual_end_date.strftime('%Y-%m-%d')}):**\n"
+                                                                        f"- Доля позитивных новостей: {positive_pct:.1f}% ({positive_count} шт.)\n"
+                                                                        f"- Доля негативных новостей: {negative_pct:.1f}% ({negative_count} шт.)\n"
+                                                                        f"- Доля нейтральных новостей: {neutral_pct:.1f}% ({neutral_count} шт.)\n"
+                                                                        f"- Средний балл тональности (от -1 до +1): {avg_score:.2f}\n\n"
+                                                                        f"**Примеры позитивных новостей:**\n{pos_examples_str}\n\n"
+                                                                        f"**Примеры негативных новостей:**\n{neg_examples_str}\n\n"
+                                                                        f"**Твоя краткая сводка:**"
+                                                                    )
+
+                                                                    print("--- PROMPT FOR LLAMA ---")
+                                                                    print(llama_prompt)
+                                                                    print("--- END PROMPT ---")
+
+                                                                    # --- Add specific try-except for the agent call ---
+                                                                    response = None # Initialize response
+                                                                    try:
+                                                                        # !!! Check if '.chat' is the correct method for your agent !!!
+                                                                        response = finrobot_agent.chat(llama_prompt)
+                                                                        st.success("Ответ от AI получен.") # Confirmation
+                                                                    except Exception as agent_call_e:
+                                                                        st.error(f"Ошибка при вызове AI агента ({type(agent_call_e).__name__}): {agent_call_e}")
+                                                                        st.error("Убедитесь, что локальный LLM сервер (Ollama/LM Studio) запущен, модель llama3 доступна, и метод вызова агента (.chat?) корректен.")
+                                                                        traceback.print_exc()
+                                                                    # --- End agent call try-except ---
+
+                                                                    # --- Display result or info if call failed ---
+                                                                    if response is not None:
+                                                                        st.subheader("Ответ от AI (Llama3):")
+                                                                        st.write("Тип ответа:", type(response)) # Show response type
+                                                                        st.write("Содержимое ответа (Raw):")
+                                                                        st.write(response) # Show raw response for debugging
+                                                                        st.markdown("--- ")
+                                                                        st.markdown("**Сформатированная сводка:**")
+                                                                        # Attempt to display formatted response
+                                                                        if isinstance(response, dict) and 'content' in response:
+                                                                            st.markdown(response['content'])
+                                                                        elif isinstance(response, str):
+                                                                            st.markdown(response)
+                                                                        else:
+                                                                            st.warning(f"Не удалось извлечь текстовую сводку из ответа типа: {type(response)}")
+                                                                    else:
+                                                                        st.warning("Вызов AI агента не вернул результат.")
+                                                                    # --- End display block ---
+
+                                                                except Exception as llm_e: # Outer try-except for prompt formatting etc.
+                                                                    st.error(f"Ошибка при подготовке запроса или отображении результата AI: {llm_e}")
+                                                                    traceback.print_exc()
+                                                        else:
+                                                            st.error("Не удалось инициализировать AI-агента для генерации сводки. Проверьте консоль на ошибки инициализации.")
+
+                                                    with st.expander("Показать новости с оценкой тональности"):
+                                                        df_sentiment = pd.DataFrame(news_with_sentiment) # Contains numeric scores
+                                                        def highlight_sentiment(row):
+                                                            score = row['score'] # This is the numeric score
+                                                            if score > 0.1: color = 'background-color: #2a4f38' # Green
+                                                            elif score < -0.1: color = 'background-color: #5a2a2a' # Red
+                                                            else: color = '' # Neutral/weak
+                                                            # Return style for the entire row based on the score
+                                                            return [color] * len(row)
+
+                                                        # Apply the styling function to the DataFrame with numeric scores
+                                                        # Format the 'score' column specifically for display AFTER applying the style
+                                                        st.dataframe(
+                                                            df_sentiment[['label', 'score', 'summary']] # Use original df for apply
+                                                            .style
+                                                            .apply(highlight_sentiment, axis=1)
+                                                            .format({'score': '{:+.2f}'}), # Format score for display
+                                                            use_container_width=True
+                                                        )
+
+                                                else:
+                                                    st.info("Нет проанализированных новостей для отображения статистики.")
+
+                                        except ImportError as imp_err:
+                                             st.error(f"Ошибка импорта для sentiment analysis: {imp_err}. Убедитесь, что 'transformers' и 'torch' установлены.")
+                                        except Exception as e: # Ensure outer try has an except
+                                            st.error(f"Ошибка во время анализа тональности: {e}")
+                                            traceback.print_exc()
+                                else:
+                                     st.warning("Нет сводок новостей или не удалось загрузить модель тональности.")
+
+                            else:
+                                pass
                     else:
                         st.warning("Пожалуйста, выберите актив.")
+
             # <<< END: News Analysis Section >>>
             
         else:
