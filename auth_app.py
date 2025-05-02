@@ -68,10 +68,10 @@ from app_pages import render_account_dashboard, render_transactions_manager
 
 
  # --- NEW: Function to fetch real news from processed CSV files >>>
-def fetch_news_from_csv(asset_name, start_date=None, end_date=None, base_news_dir="notebooks/news_data", num_articles=10):
+def fetch_news_from_csv(asset_name, start_date=None, end_date=None, base_news_dir="notebooks/news_data", num_articles=15):
     """
     Читает обработанный CSV с новостями для актива, фильтрует по дате 
-    и возвращает сводку последних новостей в указанном диапазоне.
+    и возвращает сводку последних `num_articles` новостей в указанном диапазоне.
     
     Args:
         asset_name (str): Имя актива/папки (e.g., 'btc', 'eth').
@@ -81,7 +81,7 @@ def fetch_news_from_csv(asset_name, start_date=None, end_date=None, base_news_di
         num_articles (int): Максимальное количество последних новостей для возврата.
         
     Returns:
-        dict: Словарь с ключами 'text', 'start_date', 'end_date', 'count' или None при ошибке.
+        dict: Словарь с ключами 'text', 'summaries', 'start_date', 'end_date', 'count' или None при ошибке.
     """
     # --- No change needed for mapping ticker to asset_name here, asset_name is now passed directly --- 
     
@@ -128,11 +128,19 @@ def fetch_news_from_csv(asset_name, start_date=None, end_date=None, base_news_di
             
         # Sort by actual datetime descending and get latest summaries from filtered data
         df_sorted = df_filtered.sort_values(by='date_published', ascending=False)
+        # --- RE-ADDED .head(num_articles) --- 
         latest_summaries = df_sorted['summary'].head(num_articles).tolist()
+        df_selected = df_sorted.head(num_articles) # Keep the selected dataframe part
         
         # Get the actual date range of the selected articles
-        actual_min_date = df_sorted['date_published_date'].min()
-        actual_max_date = df_sorted['date_published_date'].max()
+        # Use df_selected to get dates only from the articles we are returning
+        if not df_selected.empty:
+             actual_min_date = df_selected['date_published_date'].min()
+             actual_max_date = df_selected['date_published_date'].max()
+        else: # Should not happen if latest_summaries is not empty, but safety check
+             actual_min_date = filter_start_date
+             actual_max_date = filter_end_date
+             
         articles_count = len(latest_summaries)
 
         if not latest_summaries:
@@ -145,10 +153,10 @@ def fetch_news_from_csv(asset_name, start_date=None, end_date=None, base_news_di
         
         return {
             "text": full_text,
-            "summaries": latest_summaries, # <<< ADDED: Return list of summaries
+            "summaries": latest_summaries, # Return the selected summaries
             "start_date": actual_min_date,
             "end_date": actual_max_date,
-            "count": articles_count
+            "count": articles_count # Count reflects selected articles
         }
 
     except Exception as e:
@@ -1760,7 +1768,7 @@ else:
             # <<< START NEW: FinNLP Analysis Section >>>
             # --- UPDATED: Section title to reflect Transformers usage --- 
             st.markdown("--- ")
-            st.subheader(f"Анализ новостей по активу (на базе Transformers)")
+            st.subheader(f"Анализ новостей по активу")
 
             # --- Determine available news assets --- 
             news_data_base_dir = "notebooks/news_data"
@@ -1803,19 +1811,22 @@ else:
                      default_start_date_news = today_date_news - timedelta(days=7) 
                      news_start_date = st.date_input("Начальная дата новостей", value=default_start_date_news, max_value=today_date_news, key="news_start_date")
                      news_end_date = st.date_input("Конечная дата новостей", value=today_date_news, min_value=news_start_date, max_value=today_date_news, key="news_end_date")
+                     # --- UPDATED: Increased max_value and default --- 
+                     num_articles_to_analyze = st.number_input("Макс. кол-во новостей", min_value=1, max_value=2000, value=20, step=5, key="num_articles_news")
 
                 # --- Analysis Button --- 
                 if st.button("📰 Анализировать новости", key="analyze_news_button"):
                     if selected_asset_name_news: # Check if asset name is resolved
                         # Use ticker for display, asset name for fetching
-                        spinner_text = f"Получение и анализ новостей для {selected_asset_ticker_news} ({news_start_date} - {news_end_date})..."
+                        spinner_text = f"Получение и анализ {num_articles_to_analyze} новостей для {selected_asset_ticker_news} ({news_start_date} - {news_end_date})..."
                         with st.spinner(spinner_text):
-                            # --- UPDATED Call: Pass dates to fetch function --- 
+                            # --- UPDATED Call: Pass dates AND num_articles to fetch function --- 
                             # 1. Fetch news (Real data now)
                             news_fetch_result = fetch_news_from_csv(
                                 selected_asset_name_news, # Pass asset name (e.g., 'btc')
                                 start_date=news_start_date,
-                                end_date=news_end_date
+                                end_date=news_end_date,
+                                num_articles=num_articles_to_analyze # Pass user-defined limit
                             )
                             
                             if news_fetch_result:
@@ -1835,87 +1846,107 @@ else:
                                     import torch
                                     from collections import Counter # <<< Added Counter for aggregation
                                     
+                                    # --- Display Sentiment and NER side-by-side --- 
                                     col1_nlp, col2_nlp = st.columns(2)
         
                                     # 2. Analyze Sentiment
                                     with col1_nlp:
                                         st.markdown("**Анализ тональности (по статьям):**")
-                                        # --- UPDATED: Analyze sentiment per summary --- 
                                         individual_summaries = news_fetch_result.get("summaries", [])
                                         if individual_summaries:
                                             try:
-                                                # Initialize pipeline once
-                                                sentiment_pipeline = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english", device=0 if torch.cuda.is_available() else -1, truncation=True) # Added truncation=True for safety
+                                                print(f"DEBUG: Starting sentiment analysis for {len(individual_summaries)} summaries.") # DEBUG
+                                                sentiment_pipeline = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english", device=0 if torch.cuda.is_available() else -1, truncation=True) 
                                                 
                                                 all_sentiments = []
-                                                # Analyze each summary
+                                                print("DEBUG: Sentiment pipeline created. Calling pipeline...") # DEBUG
                                                 with st.spinner(f"Анализ тональности {len(individual_summaries)} статей..."):
+                                                    # Pass list directly for batch processing
                                                     sentiment_results_list = sentiment_pipeline([str(s) for s in individual_summaries if pd.notna(s)])
+                                                print(f"DEBUG: Sentiment pipeline returned: {sentiment_results_list}") # DEBUG
                                                 
                                                 # Process results
                                                 if sentiment_results_list:
                                                     for result in sentiment_results_list:
                                                         label = result.get('label', 'UNKNOWN')
-                                                        # score = result.get('score', 0)
                                                         all_sentiments.append(label)
                                                         
                                                 # Aggregate results
                                                 if all_sentiments:
                                                     sentiment_counts = Counter(all_sentiments)
-                                                    st.metric("Общая тональность:", ", ".join([f"{label}: {count}" for label, count in sentiment_counts.items()]))
+                                                    positive_count = sentiment_counts.get('POSITIVE', 0)
+                                                    total_analyzed = len(all_sentiments)
+                                                    positive_percentage = (positive_count / total_analyzed) * 100 if total_analyzed > 0 else 0
+                                                    print(f"DEBUG: Sentiment counts: {sentiment_counts}, Positive %: {positive_percentage:.2f}") # DEBUG
+                                                    
+                                                    # --- UPDATED: Display counts and percentage --- 
+                                                    sentiment_summary_str = ", ".join([f"{label}: {count}" for label, count in sentiment_counts.items()])
+                                                    st.metric("Общая тональность", f"{positive_percentage:.1f}% Positive", delta=sentiment_summary_str, delta_color="off")
                                                 else:
+                                                     print("DEBUG: No sentiments extracted from results.") # DEBUG
                                                      st.info("Не удалось определить тональность для статей.")
-                                                     
-                                                del sentiment_pipeline # Free up memory
+                                                del sentiment_pipeline 
                                             except Exception as e_sent:
+                                                print(f"ERROR in Sentiment Analysis: {e_sent}") # DEBUG
                                                 st.error(f"Ошибка анализа тональности: {e_sent}")
                                                 st.caption("Убедитесь, что библиотеки transformers, torch/tensorflow, sentencepiece установлены.")
                                         else:
+                                             print("DEBUG: No summaries available for sentiment analysis.") # DEBUG
                                              st.info("Нет сводок для анализа тональности.")
-                                     
-                                    # 3. Summarize Text (Optional)
-                                    with col2_nlp:
-                                         st.markdown("**Краткое изложение (всех сводок):**")
-                                         # Using BART-large-cnn
-                                         try:
-                                             # Use the combined news_text here for overall summary
-                                             if news_text:
-                                                 summarizer_pipeline = pipeline("summarization", model="facebook/bart-large-cnn", device=0 if torch.cuda.is_available() else -1)
-                                                 summary_result = summarizer_pipeline(news_text, max_length=150, min_length=40, do_sample=False)
-                                                 if summary_result:
-                                                     summary = summary_result[0]['summary_text']
-                                                     with st.expander("Показать/скрыть общую сводку", expanded=True):
-                                                         st.write(summary)
-                                                 else:
-                                                     st.info("Не удалось создать общую сводку.")
-                                                 del summarizer_pipeline # Free up memory
-                                             else:
-                                                 st.info("Нет текста для создания сводки.")
-                                         except Exception as e_sum:
-                                             st.error(f"Ошибка суммаризации: {e_sum}")
-                                             st.caption("Убедитесь, что библиотеки transformers, torch/tensorflow, sentencepiece установлены.")
-                                
+                                             
+                                    # 3. Summarize Text (Optional) - REMOVED
+                                    
                                     # 4. Extract Key Information (NER)
-                                    st.markdown("**Извлеченные сущности (NER) (из всех сводок):**")
-                                    try:
-                                        # Use the combined news_text here for overall NER
-                                        if news_text:
-                                            ner_pipeline = pipeline("ner", model="dbmdz/bert-large-cased-finetuned-conll03-english", grouped_entities=True, device=0 if torch.cuda.is_available() else -1)
-                                            ner_results = ner_pipeline(news_text)
-                                            if ner_results:
-                                                formatted_entities = [f"{entity['word']} ({entity['entity_group']}, {entity['score']:.2f})" for entity in ner_results]
-                                                with st.expander("Показать/скрыть сущности", expanded=False):
-                                                     st.info("; ".join(formatted_entities))
+                                    with col2_nlp: 
+                                        st.markdown("**Извлеченные сущности (NER) (из всех сводок):**")
+                                        try:
+                                            if news_text:
+                                                print("DEBUG: Starting NER analysis.") # DEBUG
+                                                ner_pipeline = pipeline("ner", model="dbmdz/bert-large-cased-finetuned-conll03-english", grouped_entities=True, device=0 if torch.cuda.is_available() else -1)
+                                                print("DEBUG: NER pipeline created. Calling pipeline...") # DEBUG
+                                                ner_results = ner_pipeline(news_text)
+                                                print(f"DEBUG: NER pipeline returned: {len(ner_results)} entities") # DEBUG
+                                                
+                                                if ner_results:
+                                                    # --- ADDED: Calculate and display entity frequency --- 
+                                                    entity_words = [(entity['entity_group'], entity['word']) for entity in ner_results]
+                                                    entity_counts = Counter(entity_words)
+                                                    
+                                                    st.write("**Наиболее частые сущности:**")
+                                                    top_n = 5
+                                                    # Display Top N ORG
+                                                    top_org = [f"{word} ({count})" for (group, word), count in entity_counts.most_common() if group == 'ORG'][:top_n]
+                                                    if top_org:
+                                                         st.info(f"ORG: {'; '.join(top_org)}")
+                                                    # Display Top N PER
+                                                    top_per = [f"{word} ({count})" for (group, word), count in entity_counts.most_common() if group == 'PER'][:top_n]
+                                                    if top_per:
+                                                         st.info(f"PER: {'; '.join(top_per)}")
+                                                    # Display Top N LOC
+                                                    top_loc = [f"{word} ({count})" for (group, word), count in entity_counts.most_common() if group == 'LOC'][:top_n]
+                                                    if top_loc:
+                                                         st.info(f"LOC: {'; '.join(top_loc)}")
+                                                    # --- END: Entity frequency --- 
+                                                    
+                                                    # Display all entities in expander
+                                                    formatted_entities = [f"{entity['word']} ({entity['entity_group']}, {entity['score']:.2f})" for entity in ner_results]
+                                                    print(f"DEBUG: Formatted NER entities: {len(formatted_entities)}") # DEBUG
+                                                    with st.expander(f"Показать все {len(ner_results)} сущности", expanded=False):
+                                                         st.info("; ".join(formatted_entities))
+                                                else:
+                                                    print("DEBUG: No NER entities found.") # DEBUG
+                                                    st.write("Сущности не найдены.")
+                                                del ner_pipeline 
                                             else:
-                                                st.write("Сущности не найдены.")
-                                            del ner_pipeline # Free up memory
-                                        else:
-                                             st.info("Нет текста для извлечения сущностей.")
-                                    except Exception as e_ner:
-                                        st.error(f"Ошибка извлечения сущностей: {e_ner}")
-                                        st.caption("Убедитесь, что библиотеки transformers, torch/tensorflow, sentencepiece установлены.")
-    
+                                                 print("DEBUG: No news_text available for NER analysis.") # DEBUG
+                                                 st.info("Нет текста для извлечения сущностей.")
+                                        except Exception as e_ner:
+                                            print(f"ERROR in NER Analysis: {e_ner}") # DEBUG
+                                            st.error(f"Ошибка извлечения сущностей: {e_ner}")
+                                            st.caption("Убедитесь, что библиотеки transformers, torch/tensorflow, sentencepiece установлены.")
+
                                 except Exception as e:
+                                    print(f"ERROR in Main Analysis Block: {e}") # DEBUG
                                     st.error(f"Произошла ошибка при анализе новостей: {e}")
                                     traceback.print_exc()
                             # else: # Error or no news found, message handled within fetch_news_from_csv
