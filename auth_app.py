@@ -10,6 +10,9 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import traceback # Ensure traceback is imported
 import json # For holdings display
+# --- ADDED: Import pipeline --- 
+from transformers import pipeline
+import torch # Ensure torch is imported if used for device placement
 
 # Импорт модулей приложения
 from portfolios_optimization.data_loader import (
@@ -62,6 +65,98 @@ from portfolios_optimization.finrobot_core.workflow import SingleAssistant # New
 from app_pages import render_account_dashboard, render_transactions_manager
 
 # --- HELPER FUNCTIONS (Moved to top after imports) ---
+
+
+ # --- NEW: Function to fetch real news from processed CSV files >>>
+def fetch_news_from_csv(asset_name, start_date=None, end_date=None, base_news_dir="notebooks/news_data", num_articles=10):
+    """
+    Читает обработанный CSV с новостями для актива, фильтрует по дате 
+    и возвращает сводку последних новостей в указанном диапазоне.
+    
+    Args:
+        asset_name (str): Имя актива/папки (e.g., 'btc', 'eth').
+        start_date (datetime.date, optional): Начальная дата для фильтрации новостей.
+        end_date (datetime.date, optional): Конечная дата для фильтрации новостей.
+        base_news_dir (str): Базовая директория с папками новостей.
+        num_articles (int): Максимальное количество последних новостей для возврата.
+        
+    Returns:
+        dict: Словарь с ключами 'text', 'start_date', 'end_date', 'count' или None при ошибке.
+    """
+    # --- No change needed for mapping ticker to asset_name here, asset_name is now passed directly --- 
+    
+    combined_file = os.path.join(base_news_dir, asset_name, f"combined_{asset_name}_news.csv")
+
+    if not os.path.exists(combined_file):
+        st.error(f"Файл с новостями не найден: {combined_file}. Запустите скрипт process_news_data.py.")
+        return None
+
+    try:
+        df = pd.read_csv(combined_file)
+        
+        # Ensure 'date_published' exists and convert to datetime
+        if 'date_published' not in df.columns:
+            st.error(f"Колонка 'date_published' отсутствует в файле: {combined_file}")
+            return None
+        # Convert to datetime objects, coercing errors
+        df['date_published'] = pd.to_datetime(df['date_published'], errors='coerce')
+        df.dropna(subset=['date_published'], inplace=True)
+        # Keep only date part for comparison with date input
+        df['date_published_date'] = df['date_published'].dt.date 
+
+        # Ensure 'summary' exists
+        if 'summary' not in df.columns:
+                st.error(f"Колонка 'summary' отсутствует в файле: {combined_file}")
+                return None
+        
+        # --- ADDED: Filter by date range --- 
+        min_date_in_file = df['date_published_date'].min()
+        max_date_in_file = df['date_published_date'].max()
+        
+        # Use provided dates, default to file min/max if None
+        filter_start_date = start_date if start_date else min_date_in_file
+        filter_end_date = end_date if end_date else max_date_in_file
+
+        # Apply the filter
+        mask = (df['date_published_date'] >= filter_start_date) & (df['date_published_date'] <= filter_end_date)
+        df_filtered = df[mask]
+        # --- End Date Filtering --- 
+        
+        if df_filtered.empty:
+            st.info(f"Не найдено новостей для {asset_name.upper()} в диапазоне {filter_start_date} - {filter_end_date}.")
+            return None
+            
+        # Sort by actual datetime descending and get latest summaries from filtered data
+        df_sorted = df_filtered.sort_values(by='date_published', ascending=False)
+        latest_summaries = df_sorted['summary'].head(num_articles).tolist()
+        
+        # Get the actual date range of the selected articles
+        actual_min_date = df_sorted['date_published_date'].min()
+        actual_max_date = df_sorted['date_published_date'].max()
+        articles_count = len(latest_summaries)
+
+        if not latest_summaries:
+            # This case should be covered by df_filtered.empty check above, but kept for safety
+            st.info(f"Не найдено сводок новостей для {asset_name.upper()} в диапазоне {filter_start_date} - {filter_end_date}.")
+            return None
+            
+        # Combine summaries into a single text block
+        full_text = "\n\n---\n\n".join([str(s) for s in latest_summaries if pd.notna(s)])
+        
+        return {
+            "text": full_text,
+            "summaries": latest_summaries, # <<< ADDED: Return list of summaries
+            "start_date": actual_min_date,
+            "end_date": actual_max_date,
+            "count": articles_count
+        }
+
+    except Exception as e:
+        st.error(f"Ошибка при чтении или обработке файла новостей {combined_file}: {e}")
+        traceback.print_exc()
+        return None
+    # <<< END NEWS FETCHING FUNCTION >>>
+
 
 # --- Function to initialize FinRobot Agent ---
 @st.cache_resource # Cache the agent resource itself
@@ -1662,252 +1757,289 @@ else:
                          st.error(f"Ошибка при построении графика для {selected_asset}: {e}")
                          traceback.print_exc() # Print detailed error in console
 
+            # <<< START NEW: FinNLP Analysis Section >>>
+            # --- UPDATED: Section title to reflect Transformers usage --- 
+            st.markdown("--- ")
+            st.subheader(f"Анализ новостей по активу (на базе Transformers)")
+
+            # --- Determine available news assets --- 
+            news_data_base_dir = "notebooks/news_data"
+            available_news_assets_map = {}
+            try:
+                # Scan subdirectories in news_data
+                asset_dirs = [d for d in os.listdir(news_data_base_dir) if os.path.isdir(os.path.join(news_data_base_dir, d))]
+                # Try to map dir name (e.g., 'btc') back to a ticker format (e.g., 'BTCUSDT') if possible
+                # This assumes tickers are like {ASSET}USDT
+                all_price_tickers = combined_df.columns.tolist() if not combined_df.empty else []
+                for asset_dir_name in asset_dirs:
+                    # Find a matching ticker from price data
+                    matching_ticker = next((ticker for ticker in all_price_tickers if ticker.lower().startswith(asset_dir_name.lower())), None)
+                    if matching_ticker:
+                        available_news_assets_map[matching_ticker] = asset_dir_name # Store map: BTCUSDT -> btc
+                    else:
+                        # If no ticker matches, use the directory name as a fallback key (less ideal)
+                        available_news_assets_map[asset_dir_name.upper()] = asset_dir_name
+            except FileNotFoundError:
+                 st.warning(f"Директория с новостями не найдена: {news_data_base_dir}")
+                 available_news_assets_map = {}
+            
+            if not available_news_assets_map:
+                 st.warning("Не найдены доступные активы с новостями для анализа.")
+            else:
+                # --- Get User Input --- 
+                col1_news_opts, col2_news_opts = st.columns([2, 3])
+                with col1_news_opts:
+                    selected_asset_ticker_news = st.selectbox(
+                        "Выберите актив для анализа новостей:", 
+                        options=list(available_news_assets_map.keys()), # Use tickers as options
+                        key="news_asset_select"
+                    )
+                    # Get the corresponding directory/asset name from the selected ticker
+                    selected_asset_name_news = available_news_assets_map.get(selected_asset_ticker_news)
+                
+                with col2_news_opts:
+                     # Date range selection
+                     today_date_news = datetime.now().date()
+                     default_start_date_news = today_date_news - timedelta(days=7) 
+                     news_start_date = st.date_input("Начальная дата новостей", value=default_start_date_news, max_value=today_date_news, key="news_start_date")
+                     news_end_date = st.date_input("Конечная дата новостей", value=today_date_news, min_value=news_start_date, max_value=today_date_news, key="news_end_date")
+
+                # --- Analysis Button --- 
+                if st.button("📰 Анализировать новости", key="analyze_news_button"):
+                    if selected_asset_name_news: # Check if asset name is resolved
+                        # Use ticker for display, asset name for fetching
+                        spinner_text = f"Получение и анализ новостей для {selected_asset_ticker_news} ({news_start_date} - {news_end_date})..."
+                        with st.spinner(spinner_text):
+                            # --- UPDATED Call: Pass dates to fetch function --- 
+                            # 1. Fetch news (Real data now)
+                            news_fetch_result = fetch_news_from_csv(
+                                selected_asset_name_news, # Pass asset name (e.g., 'btc')
+                                start_date=news_start_date,
+                                end_date=news_end_date
+                            )
+                            
+                            if news_fetch_result:
+                                news_text = news_fetch_result["text"]
+                                actual_start_date = news_fetch_result["start_date"]
+                                actual_end_date = news_fetch_result["end_date"]
+                                num_articles_fetched = news_fetch_result["count"]
+                                
+                                st.markdown(f"**Анализ {num_articles_fetched} новостей ({actual_start_date.strftime('%Y-%m-%d')} - {actual_end_date.strftime('%Y-%m-%d')}):**")
+                                st.text_area("Текст сводок:", news_text, height=200, disabled=True, key="news_display_area")
+                                st.markdown("--- ")
+                                
+                                # Proceed with analysis only if news text was fetched
+                                try:
+                                    # --- Import pipeline --- 
+                                    from transformers import pipeline
+                                    import torch
+                                    from collections import Counter # <<< Added Counter for aggregation
+                                    
+                                    col1_nlp, col2_nlp = st.columns(2)
+        
+                                    # 2. Analyze Sentiment
+                                    with col1_nlp:
+                                        st.markdown("**Анализ тональности (по статьям):**")
+                                        # --- UPDATED: Analyze sentiment per summary --- 
+                                        individual_summaries = news_fetch_result.get("summaries", [])
+                                        if individual_summaries:
+                                            try:
+                                                # Initialize pipeline once
+                                                sentiment_pipeline = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english", device=0 if torch.cuda.is_available() else -1, truncation=True) # Added truncation=True for safety
+                                                
+                                                all_sentiments = []
+                                                # Analyze each summary
+                                                with st.spinner(f"Анализ тональности {len(individual_summaries)} статей..."):
+                                                    sentiment_results_list = sentiment_pipeline([str(s) for s in individual_summaries if pd.notna(s)])
+                                                
+                                                # Process results
+                                                if sentiment_results_list:
+                                                    for result in sentiment_results_list:
+                                                        label = result.get('label', 'UNKNOWN')
+                                                        # score = result.get('score', 0)
+                                                        all_sentiments.append(label)
+                                                        
+                                                # Aggregate results
+                                                if all_sentiments:
+                                                    sentiment_counts = Counter(all_sentiments)
+                                                    st.metric("Общая тональность:", ", ".join([f"{label}: {count}" for label, count in sentiment_counts.items()]))
+                                                else:
+                                                     st.info("Не удалось определить тональность для статей.")
+                                                     
+                                                del sentiment_pipeline # Free up memory
+                                            except Exception as e_sent:
+                                                st.error(f"Ошибка анализа тональности: {e_sent}")
+                                                st.caption("Убедитесь, что библиотеки transformers, torch/tensorflow, sentencepiece установлены.")
+                                        else:
+                                             st.info("Нет сводок для анализа тональности.")
+                                     
+                                    # 3. Summarize Text (Optional)
+                                    with col2_nlp:
+                                         st.markdown("**Краткое изложение (всех сводок):**")
+                                         # Using BART-large-cnn
+                                         try:
+                                             # Use the combined news_text here for overall summary
+                                             if news_text:
+                                                 summarizer_pipeline = pipeline("summarization", model="facebook/bart-large-cnn", device=0 if torch.cuda.is_available() else -1)
+                                                 summary_result = summarizer_pipeline(news_text, max_length=150, min_length=40, do_sample=False)
+                                                 if summary_result:
+                                                     summary = summary_result[0]['summary_text']
+                                                     with st.expander("Показать/скрыть общую сводку", expanded=True):
+                                                         st.write(summary)
+                                                 else:
+                                                     st.info("Не удалось создать общую сводку.")
+                                                 del summarizer_pipeline # Free up memory
+                                             else:
+                                                 st.info("Нет текста для создания сводки.")
+                                         except Exception as e_sum:
+                                             st.error(f"Ошибка суммаризации: {e_sum}")
+                                             st.caption("Убедитесь, что библиотеки transformers, torch/tensorflow, sentencepiece установлены.")
+                                
+                                    # 4. Extract Key Information (NER)
+                                    st.markdown("**Извлеченные сущности (NER) (из всех сводок):**")
+                                    try:
+                                        # Use the combined news_text here for overall NER
+                                        if news_text:
+                                            ner_pipeline = pipeline("ner", model="dbmdz/bert-large-cased-finetuned-conll03-english", grouped_entities=True, device=0 if torch.cuda.is_available() else -1)
+                                            ner_results = ner_pipeline(news_text)
+                                            if ner_results:
+                                                formatted_entities = [f"{entity['word']} ({entity['entity_group']}, {entity['score']:.2f})" for entity in ner_results]
+                                                with st.expander("Показать/скрыть сущности", expanded=False):
+                                                     st.info("; ".join(formatted_entities))
+                                            else:
+                                                st.write("Сущности не найдены.")
+                                            del ner_pipeline # Free up memory
+                                        else:
+                                             st.info("Нет текста для извлечения сущностей.")
+                                    except Exception as e_ner:
+                                        st.error(f"Ошибка извлечения сущностей: {e_ner}")
+                                        st.caption("Убедитесь, что библиотеки transformers, torch/tensorflow, sentencepiece установлены.")
+    
+                                except Exception as e:
+                                    st.error(f"Произошла ошибка при анализе новостей: {e}")
+                                    traceback.print_exc()
+                            # else: # Error or no news found, message handled within fetch_news_from_csv
+                            #    pass 
+                    else:
+                        st.warning("Пожалуйста, выберите актив.")
+            # <<< END: News Analysis Section >>>
+            
         else:
              st.warning(f"Не удалось загрузить данные из 'data/data_compare_eda.csv'. Запустите обновление данных.")
         pass # End of Data & Analysis page block
-
-    # <<< Add block for the new Research page >>>
-    elif st.session_state.active_page == "Исследование":
-        st.header("Исследование альтернативных портфелей")
-        st.markdown("Проанализируйте, как изменилась бы стоимость портфеля, если бы вы инвестировали \n        указанную **начальную сумму** в **выбранный набор активов** в заданный период.") # Modified description
-
-        # --- Настройки Исследования --- #
-        st.subheader("Параметры симуляции")
         
-        # Load combined data to get available assets (cached)
-        with st.spinner("Загрузка списка доступных активов..."):
-             # Use the same counter as Data & Analysis tab for cache consistency
-             combined_df_research = load_combined_data_cached(st.session_state.get('update_counter', 0)) 
+    # ... (rest of the page elif blocks) ...
 
-        if combined_df_research.empty:
-            st.error("Не удалось загрузить данные ('data/data_compare_eda.csv'). Исследование невозможно.")
+    # --- NEW: Function to initialize FinRobot Agent ---
+    @st.cache_resource # Cache the agent resource itself
+    def initialize_finrobot_agent():
+        """Initializes and returns a FinRobot agent configured with OAI_CONFIG_LIST."""
+        try:
+            llm_config = {
+                "config_list": autogen.config_list_from_json(
+                    "OAI_CONFIG_LIST", # Assumes file is in the root directory
+                    filter_dict={"model": ["gpt-4-0125-preview"]}, # Or whichever model you have in the list
+                ),
+                "timeout": 120,
+                "temperature": 0.2, # Lower temperature for more factual answers
+            }
+            # Create a basic assistant agent
+            # You might want to customize the system message later
+            assistant_agent = SingleAssistant(
+                name="Portfolio_Analyst_Assistant",
+                llm_config=llm_config,
+                system_message="You are a helpful AI assistant specialized in analyzing portfolio performance data. Answer the user's questions based on the provided portfolio summary. Be concise and clear.",
+                human_input_mode="NEVER", # Agent runs without asking for human input during its process
+            )
+            return assistant_agent
+        except FileNotFoundError:
+            st.error("Error: OAI_CONFIG_LIST file not found. Please ensure it exists in the project root.")
+            return None
+        except Exception as e:
+            st.error(f"Error initializing FinRobot agent: {e}")
+            traceback.print_exc() # Print detailed traceback to console/log
+            return None
+    # --- End Function to initialize FinRobot Agent ---
+
+    # --- NEW: Function to format analysis results for LLM ---
+    def format_portfolio_data_for_llm(analysis_results):
+        """Formats the portfolio analysis results into a string for the LLM agent."""
+        if not analysis_results or not isinstance(analysis_results, dict):
+            return "Нет данных для анализа или неверный формат."
+
+        summary_parts = []
+
+        # Extract metrics (raw numeric data)
+        metrics_df = analysis_results.get('metrics') # Use the raw metrics
+        if metrics_df is not None and isinstance(metrics_df, pd.DataFrame) and not metrics_df.empty:
+            summary_parts.append("**Основные метрики производительности по стратегиям:**")
+            for strategy in metrics_df.index: # Iterate through strategies (index)
+                summary_parts.append(f"\n*Стратегия: {strategy}*" )
+                for metric, value in metrics_df.loc[strategy].items(): # Iterate through metrics for the strategy
+                    if isinstance(value, (int, float)):
+                        # Use original metric names from calculation for formatting clues
+                        if any(p in metric.lower() for p in ['cagr', 'return']):
+                            formatted_value = f"{value:.2%}"
+                        elif any(p in metric.lower() for p in ['volatility', 'drawdown']):
+                             formatted_value = f"{value:.2%}"
+                        elif any(r in metric.lower() for r in ['ratio']):
+                             formatted_value = f"{value:.2f}"
+                        else: # Default for Final Value, Net Profit etc.
+                             formatted_value = f"{value:,.2f}"
+                             if 'value' in metric.lower() or 'profit' in metric.lower():
+                                  formatted_value = f"${formatted_value}" # Add dollar sign
+                    else:
+                         formatted_value = str(value)
+                    summary_parts.append(f"  - {metric}: {formatted_value}")
+            summary_parts.append("\n") 
         else:
-            available_assets_research = combined_df_research.columns.tolist()
-            # Exclude stablecoin from default selection if present
-            default_risky = [a for a in available_assets_research if a != STABLECOIN_ASSET]
-            assets_options = available_assets_research
-            
-            selected_hypothetical_assets = st.multiselect(
-                "Выберите гипотетический набор активов для симуляции:",
-                options=assets_options,
-                # Select first 5 risky assets by default
-                default=default_risky[:min(len(default_risky), 5)], 
-                key="research_asset_select",
-                help=f"Выберите активы для включения в симуляцию. {STABLECOIN_ASSET} будет использоваться для нераспределенных средств."
-            )
-            
-            # --- NEW: Initial Investment Input --- 
-            initial_investment_amount = st.number_input(
-                "Начальная сумма инвестиций (USD):", 
-                min_value=1.0, 
-                value=10000.0, 
-                step=100.0, 
-                format="%.2f",
-                key="research_initial_investment",
-                help="Сумма, с которой начнется симуляция."
-            )
-            # --- End Initial Investment Input ---
-            
-            st.markdown("**Настройки анализа:**")
-            with st.expander("Показать/скрыть параметры анализа"):
-                today_date = datetime.now().date()
-                default_start_date = today_date - timedelta(days=365) 
+            summary_parts.append("Метрики производительности недоступны.")
+
+        # Extract date range and final values from daily values DataFrame
+        daily_values_df = analysis_results.get('portfolio_daily_values')
+        if daily_values_df is not None and isinstance(daily_values_df, pd.DataFrame) and not daily_values_df.empty:
+            start_date = daily_values_df.index.min().strftime('%Y-%m-%d')
+            end_date = daily_values_df.index.max().strftime('%Y-%m-%d')
+            summary_parts.append(f"**Период анализа:** {start_date} - {end_date}\n")
+
+            summary_parts.append("**Финальная стоимость портфеля по стратегиям:**")
+            final_values = daily_values_df.iloc[-1] # Get last row
+            # Filter only strategy value columns (usually start with 'Value_')
+            strategy_value_cols = [col for col in daily_values_df.columns if col.startswith('Value_')]
+            for strategy_col in strategy_value_cols:
+                # Try to map column name back to display name if possible (e.g., from metrics index)
+                strategy_name = strategy_col.replace('Value_', '').replace('_', ' ') # Basic name cleanup
+                if metrics_df is not None and not metrics_df.empty:
+                     matching_names = [idx for idx in metrics_df.index if strategy_col.endswith(idx.replace(' ','_').replace('DRL ',''))]
+                     if matching_names: strategy_name = matching_names[0]
                 
-                col1_params, col2_params = st.columns(2)
-                with col1_params:
-                     sim_start_date = st.date_input("Начальная дата симуляции", value=default_start_date, max_value=today_date - timedelta(days=1), key="research_start_date")
-                     sim_commission = st.number_input("Комиссия за ребалансировку (%) [0.1% = 0.001]", min_value=0.0, max_value=5.0, value=0.1, step=0.01, format="%.3f", key="research_commission")
-                     sim_rebalance_interval = st.number_input("Интервал ребалансировки (дни)", min_value=1, value=20, step=1, key="research_rebalance_interval", help="Для Equal Weight, Markowitz, Oracle")
-                with col2_params:
-                     sim_end_date = st.date_input("Конечная дата симуляции", value=today_date, min_value=sim_start_date + timedelta(days=1) if sim_start_date else None, key="research_end_date")
-                     sim_bank_apr = st.number_input("Годовая ставка банка (%) [20% = 0.2]", min_value=0.0, max_value=100.0, value=20.0, step=0.5, format="%.1f", key="research_bank_apr")
-                     sim_drl_rebalance_interval = st.number_input("Интервал ребалансировки DRL (дни)", min_value=1, value=20, step=1, key="research_drl_interval", help="Для стратегий A2C, PPO, SAC, DDPG")
-                
-                sim_commission_rate = sim_commission / 100.0
-                sim_bank_apr_rate = sim_bank_apr / 100.0
+                value = final_values.get(strategy_col, np.nan)
+                if pd.notna(value):
+                     summary_parts.append(f"  - {strategy_name}: ${value:,.2f}")
+            summary_parts.append("\n")
+        else:
+            summary_parts.append("Данные о ежедневной стоимости портфеля недоступны.")
 
-            if st.button("🚀 Запустить исследование", use_container_width=True, key="research_run_button"):
-                if not selected_hypothetical_assets:
-                     st.warning("Пожалуйста, выберите хотя бы один актив для симуляции.")
-                elif not sim_start_date or not sim_end_date:
-                     st.warning("Пожалуйста, выберите начальную и конечную даты.")
-                elif sim_end_date <= sim_start_date:
-                     st.warning("Конечная дата должна быть позже начальной.")
-                else:
-                     st.session_state['research_results'] = None 
-                     st.session_state['research_figure'] = None
-                     
-                     # --- REMOVED User transaction fetching --- 
-                     # user_transactions = get_user_transactions(st.session_state.username)
-                     # if not user_transactions: ... 
-                     
-                     # Define data and model paths (ensure they are correct)
-                     # These should ideally be relative or configured
-                     data_path_research = "data"
-                     drl_models_dir_research = "notebooks/trained_models"
-                     st.caption(f"Путь к данным: {os.path.abspath(data_path_research)}, Путь к моделям DRL: {os.path.abspath(drl_models_dir_research)}")
+        # <<< REMOVED holdings formatting logic >>>
 
-                     with st.spinner("Выполнение симуляции... Это может занять время."):
-                         try:
-                             # --- UPDATED Call to the analysis function --- 
-                             results_summary_hypo, fig_hypo = run_hypothetical_analysis(
-                                 # user_transactions_list=user_transactions, # REMOVED
-                                 initial_investment=initial_investment_amount, # ADDED
-                                 hypothetical_assets=selected_hypothetical_assets,
-                                 start_date_str=sim_start_date.strftime('%Y-%m-%d'),
-                                 end_date_str=sim_end_date.strftime('%Y-%m-%d'),
-                                 data_path=data_path_research, # Pass data path
-                                 bank_apr=sim_bank_apr_rate,
-                                 commission_rate=sim_commission_rate,
-                                 rebalance_interval_days=sim_rebalance_interval,
-                                 drl_rebalance_interval_days=sim_drl_rebalance_interval,
-                                 drl_models_dir=drl_models_dir_research # Pass DRL model path
-                             )
-                             # --- End Updated Call ---
-                             
-                             if results_summary_hypo is not None and fig_hypo is not None:
-                                  st.session_state['research_results'] = results_summary_hypo
-                                  st.session_state['research_figure'] = fig_hypo
-                                  st.success("Исследование успешно завершено!", icon="✅")
-                             else:
-                                  # Error messages should come from run_hypothetical_analysis
-                                  st.error("Ошибка во время исследования. Проверьте детали ошибки выше или в консоли.")
-                         except Exception as e:
-                             st.error(f"Непредвиденная ошибка при запуске исследования: {e}")
-                             traceback.print_exc()
+        return "\n".join(summary_parts)
+    # --- End Function to format analysis results for LLM ---
 
-            st.markdown("--- ")
-            st.subheader("Результаты исследования")
-            # Display logic remains mostly the same
-            if 'research_results' in st.session_state and st.session_state.research_results is not None:
-                 # Display the DataFrame which now contains formatted metrics
-                 st.dataframe(st.session_state.research_results, use_container_width=True)
-            
-            if 'research_figure' in st.session_state and st.session_state.research_figure is not None:
-                 st.plotly_chart(st.session_state.research_figure, use_container_width=True)
-            # Modify the info message slightly
-            elif 'research_run_button' not in st.session_state or not st.session_state.get('research_run_button', False):
-                 st.info("Выберите активы, укажите начальную сумму и параметры, затем нажмите кнопку 'Запустить исследование' выше.")
-            elif st.session_state.get('research_results') is None and st.session_state.get('research_figure') is None:
-                 # This case means the button was clicked, but the analysis failed or returned None
-                 st.info("Исследование было запущено, но не вернуло результатов. Проверьте параметры и сообщения об ошибках выше.")
-                 
-        pass # End of Research page block
-    
-    # --- Add a final else or elif for any remaining page options or a fallback ---
-    # Example: Check if any other page option from page_options was selected
-    # This handles the case where the last 'elif' doesn't have a following block
-    # Add elif blocks for any remaining pages like "Управление активами", etc.
-    elif st.session_state.active_page == "Управление активами":
-        render_transactions_manager(st.session_state.username, price_data, assets)
-    elif st.session_state.active_page == "Единый торговый аккаунт":
-        # ... (Code for this page)
-        pass # Make sure this page also ends correctly
-    elif st.session_state.active_page == "Анализ портфеля":
-        # ... (Code for this page)
-        pass # Make sure this page also ends correctly
-    elif st.session_state.active_page == "Рекомендации":
-        # ... (Code for this page)
-        pass # Make sure this page also ends correctly
-    else:
-        # Fallback if active_page is somehow invalid 
-        st.error("Выбрана неизвестная страница.")
+    # --- HELPER FUNCTIONS (Moved to top after imports) ---
 
-# --- NEW: Function to initialize FinRobot Agent ---
-@st.cache_resource # Cache the agent resource itself
-def initialize_finrobot_agent():
-    """Initializes and returns a FinRobot agent configured with OAI_CONFIG_LIST."""
-    try:
-        llm_config = {
-            "config_list": autogen.config_list_from_json(
-                "OAI_CONFIG_LIST", # Assumes file is in the root directory
-                filter_dict={"model": ["gpt-4-0125-preview"]}, # Or whichever model you have in the list
-            ),
-            "timeout": 120,
-            "temperature": 0.2, # Lower temperature for more factual answers
-        }
-        # Create a basic assistant agent
-        # You might want to customize the system message later
-        assistant_agent = SingleAssistant(
-            name="Portfolio_Analyst_Assistant",
-            llm_config=llm_config,
-            system_message="You are a helpful AI assistant specialized in analyzing portfolio performance data. Answer the user's questions based on the provided portfolio summary. Be concise and clear.",
-            human_input_mode="NEVER", # Agent runs without asking for human input during its process
-        )
-        return assistant_agent
-    except FileNotFoundError:
-        st.error("Error: OAI_CONFIG_LIST file not found. Please ensure it exists in the project root.")
-        return None
-    except Exception as e:
-        st.error(f"Error initializing FinRobot agent: {e}")
-        traceback.print_exc() # Print detailed traceback to console/log
-        return None
-# --- End Function to initialize FinRobot Agent ---
+    # <<< NEW: Dummy function for fetching news - REPLACE WITH REAL IMPLEMENTATION >>>
+    def fetch_dummy_news(asset_ticker):
+        """Возвращает пример текста новости. Замените реальной логикой получения новостей."""
+        st.warning(f"Примечание: Используются **демонстрационные** новостные данные для {asset_ticker}.")
+        # Пример текста
+        if asset_ticker == "BTCUSDT":
+            return f"Bitcoin (BTCUSDT) price surged above $70,000 amid growing institutional interest. Several large investment firms announced new Bitcoin ETF filings. However, some analysts warn of potential volatility ahead of the upcoming halving event. The overall market sentiment remains cautiously optimistic. Key players like MicroStrategy continue to add to their BTC holdings."
+        elif asset_ticker == "ETHUSDT":
+            return f"Ethereum (ETHUSDT) saw moderate gains, following the general market trend. Discussions around the potential approval of an Ethereum Spot ETF continue, but regulatory uncertainty persists. Network activity remains high, driven by DeFi and NFT sectors. Vitalik Buterin recently commented on the importance of Layer 2 scaling solutions."
+        else:
+            return f"General market news for {asset_ticker}: Crypto markets experienced mixed trading today. Regulatory developments in the US and Asia are being closely watched by investors. Stablecoin regulations are also a hot topic. Overall trading volume was moderate."
+    # <<< END DUMMY NEWS FUNCTION >>>
 
-# --- NEW: Function to format analysis results for LLM ---
-def format_portfolio_data_for_llm(analysis_results):
-    """Formats the portfolio analysis results into a string for the LLM agent."""
-    if not analysis_results or not isinstance(analysis_results, dict):
-        return "Нет данных для анализа или неверный формат."
-
-    summary_parts = []
-
-    # Extract metrics (raw numeric data)
-    metrics_df = analysis_results.get('metrics') # Use the raw metrics
-    if metrics_df is not None and isinstance(metrics_df, pd.DataFrame) and not metrics_df.empty:
-        summary_parts.append("**Основные метрики производительности по стратегиям:**")
-        for strategy in metrics_df.index: # Iterate through strategies (index)
-            summary_parts.append(f"\n*Стратегия: {strategy}*" )
-            for metric, value in metrics_df.loc[strategy].items(): # Iterate through metrics for the strategy
-                if isinstance(value, (int, float)):
-                    # Use original metric names from calculation for formatting clues
-                    if any(p in metric.lower() for p in ['cagr', 'return']):
-                        formatted_value = f"{value:.2%}"
-                    elif any(p in metric.lower() for p in ['volatility', 'drawdown']):
-                         formatted_value = f"{value:.2%}"
-                    elif any(r in metric.lower() for r in ['ratio']):
-                         formatted_value = f"{value:.2f}"
-                    else: # Default for Final Value, Net Profit etc.
-                         formatted_value = f"{value:,.2f}"
-                         if 'value' in metric.lower() or 'profit' in metric.lower():
-                              formatted_value = f"${formatted_value}" # Add dollar sign
-                else:
-                     formatted_value = str(value)
-                summary_parts.append(f"  - {metric}: {formatted_value}")
-        summary_parts.append("\n") 
-    else:
-        summary_parts.append("Метрики производительности недоступны.")
-
-    # Extract date range and final values from daily values DataFrame
-    daily_values_df = analysis_results.get('portfolio_daily_values')
-    if daily_values_df is not None and isinstance(daily_values_df, pd.DataFrame) and not daily_values_df.empty:
-        start_date = daily_values_df.index.min().strftime('%Y-%m-%d')
-        end_date = daily_values_df.index.max().strftime('%Y-%m-%d')
-        summary_parts.append(f"**Период анализа:** {start_date} - {end_date}\n")
-
-        summary_parts.append("**Финальная стоимость портфеля по стратегиям:**")
-        final_values = daily_values_df.iloc[-1] # Get last row
-        # Filter only strategy value columns (usually start with 'Value_')
-        strategy_value_cols = [col for col in daily_values_df.columns if col.startswith('Value_')]
-        for strategy_col in strategy_value_cols:
-            # Try to map column name back to display name if possible (e.g., from metrics index)
-            strategy_name = strategy_col.replace('Value_', '').replace('_', ' ') # Basic name cleanup
-            if metrics_df is not None and not metrics_df.empty:
-                 matching_names = [idx for idx in metrics_df.index if strategy_col.endswith(idx.replace(' ','_').replace('DRL ',''))]
-                 if matching_names: strategy_name = matching_names[0]
-            
-            value = final_values.get(strategy_col, np.nan)
-            if pd.notna(value):
-                 summary_parts.append(f"  - {strategy_name}: ${value:,.2f}")
-        summary_parts.append("\n")
-    else:
-        summary_parts.append("Данные о ежедневной стоимости портфеля недоступны.")
-
-    # <<< REMOVED holdings formatting logic >>>
-
-    return "\n".join(summary_parts)
-# --- End Function to format analysis results for LLM ---
-
-'''
-poetry run streamlit run auth_app.py
-'''
+    '''
+    poetry run streamlit run auth_app.py
+    '''
