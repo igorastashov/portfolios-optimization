@@ -1628,7 +1628,10 @@ else:
         # --- Initialize session state for news analysis if not present ---
         if 'news_analysis_results' not in st.session_state:
             st.session_state.news_analysis_results = None
-        # ---------------------------------------------------------------
+        # --- Initialize session state for news chat history ---
+        if 'news_chat_history' not in st.session_state:
+            st.session_state.news_chat_history = []
+        # -------------------------------------------------------
 
         # --- Обновление данных --- #
         st.subheader("Обновление данных активов")
@@ -1805,7 +1808,8 @@ else:
                     selected_asset_ticker_news = st.selectbox(
                         "Выберите актив для анализа новостей:", 
                         options=list(available_news_assets_map.keys()), # Use tickers as options
-                        key="news_asset_select"
+                        key="news_asset_select",
+                        on_change=lambda: st.session_state.update({'news_analysis_results': None, 'news_chat_history': []}) 
                     )
                     # Get the corresponding directory/asset name from the selected ticker
                     selected_asset_name_news = available_news_assets_map.get(selected_asset_ticker_news)
@@ -1814,14 +1818,15 @@ else:
                      # Date range selection
                      today_date_news = datetime.now().date()
                      default_start_date_news = today_date_news - timedelta(days=7) 
-                     news_start_date = st.date_input("Начальная дата новостей", value=default_start_date_news, max_value=today_date_news, key="news_start_date")
-                     news_end_date = st.date_input("Конечная дата новостей", value=today_date_news, min_value=news_start_date, max_value=today_date_news, key="news_end_date")
+                     news_start_date = st.date_input("Начальная дата новостей", value=default_start_date_news, max_value=today_date_news, key="news_start_date", on_change=lambda: st.session_state.update({'news_analysis_results': None, 'news_chat_history': []}))
+                     news_end_date = st.date_input("Конечная дата новостей", value=today_date_news, min_value=news_start_date, max_value=today_date_news, key="news_end_date", on_change=lambda: st.session_state.update({'news_analysis_results': None, 'news_chat_history': []}))
                      # --- UPDATED: Increased max_value and default --- 
-                     num_articles_to_analyze = st.number_input("Макс. кол-во новостей", min_value=1, max_value=2000, value=20, step=5, key="num_articles_news")
+                     num_articles_to_analyze = st.number_input("Макс. кол-во новостей", min_value=1, max_value=2000, value=20, step=5, key="num_articles_news", on_change=lambda: st.session_state.update({'news_analysis_results': None, 'news_chat_history': []}))
 
                 # --- Analysis Button --- 
                 if st.button("📰 Анализировать новости", key="analyze_news_button"):
-                    st.session_state.news_analysis_results = None # Clear previous results before new analysis
+                    st.session_state.news_analysis_results = None # Clear previous results
+                    st.session_state.news_chat_history = [] # Clear chat history
                     if selected_asset_name_news:
                         spinner_text = f"Получение и анализ {num_articles_to_analyze} новостей для {selected_asset_ticker_news} ({news_start_date} - {news_end_date})..."
                         with st.spinner(spinner_text):
@@ -1860,12 +1865,20 @@ else:
                                 
                                 if summaries and sentiment_pipeline_instance:
                                     try:
-                                        # ... (limit summaries, check valid_summaries logic) ...
-                                        max_summaries_for_analysis = 100
-                                        summaries_to_analyze = summaries[:max_summaries_for_analysis] if len(summaries) > max_summaries_for_analysis else summaries
+                                        # --- REMOVE max_summaries_for_analysis logic ---
+                                        # max_summaries_for_analysis = 100 
+                                        # if len(summaries) > max_summaries_for_analysis:
+                                        #     st.warning(...) 
+                                        #     summaries_to_analyze = summaries[:max_summaries_for_analysis]
+                                        # else:
+                                        #     summaries_to_analyze = summaries
+                                        # --- Use all fetched summaries directly --- 
+                                        summaries_to_analyze = summaries 
+
                                         valid_summaries = [str(s) for s in summaries_to_analyze if pd.notna(s) and isinstance(s, str)]
 
                                         if valid_summaries:
+                                            # Pass valid_summaries (which now contains all fetched summaries) to the pipeline
                                             results = sentiment_pipeline_instance(valid_summaries)
                                             # ... (calculate scores, counts, news_with_sentiment list) ...
                                             sentiment_scores = []
@@ -1892,9 +1905,9 @@ else:
                                             total_analyzed = len(sentiment_scores)
                                             if total_analyzed > 0:
                                                 # --- Store results in session state --- 
-                                                st.session_state.news_analysis_results = {
+                                                results_data = {
                                                     "ticker": selected_asset_ticker_news,
-                                                    "fetched_summaries": summaries, # Store original fetched ones
+                                                    "fetched_summaries": summaries,
                                                     "analyzed_summaries_sentiment": news_with_sentiment,
                                                     "avg_score": sum(sentiment_scores) / total_analyzed,
                                                     "positive_pct": (positive_count / total_analyzed) * 100,
@@ -1908,7 +1921,69 @@ else:
                                                     "num_articles_fetched": news_fetch_result["count"],
                                                     "error": None
                                                 }
-                                                st.success("Анализ новостей завершен.") # Indicate success
+                                                st.session_state.news_analysis_results = results_data
+                                                st.success("Анализ новостей завершен.")
+
+                                                # --- NEW: Automatically generate initial summary --- 
+                                                # Outer try-except for the whole summary generation process
+                                                try:
+                                                    with st.spinner("🤖 Генерация начальной сводки AI..."):
+                                                        agent_init = initialize_finrobot_agent()
+                                                        if agent_init:
+                                                            # Inner try-except for prompt formatting and agent call
+                                                            try: 
+                                                                n_examples = 3 
+                                                                # Sort needs to happen here, before slicing examples
+                                                                news_with_sentiment_sorted = sorted(news_with_sentiment, key=lambda x: x['score'], reverse=True)
+                                                                positive_examples = [item['summary'] for item in news_with_sentiment_sorted if item['score'] > 0][:n_examples]
+                                                                negative_examples = [item['summary'] for item in news_with_sentiment_sorted if item['score'] < 0][::-1][:n_examples]
+                                                                pos_examples_str = "\n".join([f"- {ex[:150]}..." for ex in positive_examples]) if positive_examples else "Нет ярких позитивных примеров"
+                                                                neg_examples_str = "\n".join([f"- {ex[:150]}..." for ex in negative_examples]) if negative_examples else "Нет ярких негативных примеров"
+
+                                                                initial_prompt = (
+                                                                    f"Ты - финансовый аналитик. Проанализируй **только** предоставленную статистику тональности и примеры новостей по активу {results_data['ticker']}. "
+                                                                    f"Сформируй **ОЧЕНЬ краткую** сводку (1-2 предложения) на русском языке, описывающую общую тональность новостного фона за период "
+                                                                    f"{results_data['actual_start_date'].strftime('%Y-%m-%d')} - {results_data['actual_end_date'].strftime('%Y-%m-%d')}. "
+                                                                    f"Упомяни ключевые числовые показатели (средний балл, % позитива/негатива).\n\n"
+                                                                    f"**Статистика:**\n"
+                                                                    f"- Позитив: {results_data['positive_pct']:.1f}%, Негатив: {results_data['negative_pct']:.1f}%, Нейтрал: {results_data['neutral_pct']:.1f}%\n"
+                                                                    f"- Средний балл: {results_data['avg_score']:.2f}\n\n"
+                                                                    f"**Примеры позитивных новостей:**\n{pos_examples_str}\n\n"
+                                                                    f"**Примеры негативных новостей:**\n{neg_examples_str}\n\n"
+                                                                    f"**Твоя ОЧЕНЬ краткая сводка (1-2 предложения):**"
+                                                                )
+                                                                
+                                                                print("--- PROMPT FOR INITIAL SUMMARY ---")
+                                                                print(initial_prompt)
+                                                                print("--- END PROMPT ---")
+
+                                                                initial_reply = agent_init.chat(initial_prompt) # Ensure .chat is correct
+                                                                
+                                                                summary_content = "Не удалось сгенерировать начальную сводку (ошибка обработки ответа)."
+                                                                if isinstance(initial_reply, dict) and 'content' in initial_reply:
+                                                                    summary_content = initial_reply['content']
+                                                                elif isinstance(initial_reply, str):
+                                                                    summary_content = initial_reply
+                                                                
+                                                                # Add initial summary to chat history
+                                                                st.session_state.news_chat_history = [] # Clear previous history first
+                                                                st.session_state.news_chat_history.append({"role": "assistant", "content": summary_content})
+                                                            except Exception as agent_call_e: # Catch errors during prompt/call
+                                                                st.error(f"Ошибка при вызове AI для начальной сводки: {agent_call_e}")
+                                                                traceback.print_exc()
+                                                                st.session_state.news_chat_history = []
+                                                                st.session_state.news_chat_history.append({"role": "assistant", "content": f"(Ошибка вызова AI для сводки: {agent_call_e})"}) 
+                                                        else:
+                                                            st.warning("Не удалось инициализировать AI для начальной сводки.")
+                                                            st.session_state.news_chat_history = []
+                                                            st.session_state.news_chat_history.append({"role": "assistant", "content": "(Не удалось сгенерировать автоматическую сводку - агент не инициализирован)"}) 
+                                                # Outer except for the whole summary generation block (e.g., spinner issues)
+                                                except Exception as initial_summary_e:
+                                                    st.error(f"Ошибка при генерации начальной сводки AI: {initial_summary_e}")
+                                                    traceback.print_exc()
+                                                    st.session_state.news_chat_history = []
+                                                    st.session_state.news_chat_history.append({"role": "assistant", "content": f"(Ошибка генерации сводки: {initial_summary_e})"})
+                                                # --- End automatic summary generation ---
                                             else:
                                                 st.warning("Не удалось извлечь оценки тональности.")
                                                 st.session_state.news_analysis_results = {"error": "Не удалось извлечь оценки тональности."}
@@ -1934,10 +2009,10 @@ else:
                     results = st.session_state.news_analysis_results
                     st.markdown(f"**Результаты анализа {results['num_articles_fetched']} новостей для {results['ticker']} ({results['actual_start_date'].strftime('%Y-%m-%d')} - {results['actual_end_date'].strftime('%Y-%m-%d')}):**")
                     
-                    # Display combined text summary (optional, can be removed if too long)
-                    combined_text = "\n\n---\n\n".join([str(s['summary']) for s in results['analyzed_summaries_sentiment'][:10] if pd.notna(s['summary'])]) + "..."
-                    st.text_area("Примеры сводок:", combined_text, height=150, disabled=True, key="news_display_area_results")
-                    st.markdown("--- ")
+                    # Display combined text summary (optional)
+                    # combined_text = ... 
+                    # st.text_area(...) 
+                    # st.markdown("--- ")
 
                     # Display Metrics
                     st.markdown("**Общая тональность:**")
@@ -1946,83 +2021,76 @@ else:
                     col2.metric("Negative", f"{results['negative_pct']:.1f}%", f"{results['negative_count']} шт.", delta_color="inverse")
                     col3.metric("Neutral", f"{results['neutral_pct']:.1f}%", f"{results['neutral_count']} шт.", delta_color="off")
                     col4.metric("Средний балл", f"{results['avg_score']:.2f}", help="-1 (Neg) до +1 (Pos)")
-
-                    # AI Summary Button
-                    if st.button("💬 Сгенерировать сводку AI", key="generate_ai_summary_sess"):
-                        # Agent initialization should still be cached
-                        finrobot_agent = initialize_finrobot_agent()
-                        if finrobot_agent:
-                            with st.spinner("🤖 Llama3 генерирует сводку..."):
-                                try:
-                                    # Get data from session state
-                                    data_for_prompt = st.session_state.news_analysis_results
-                                    news_with_sentiment = data_for_prompt['analyzed_summaries_sentiment']
+                    st.markdown("--- ") # Separator before chat
+                    
+                    # --- Moved Chat Interface INSIDE the results block ---
+                    st.subheader(f"Чат с AI по новостям {results['ticker']}")
+                    
+                    # Display chat messages
+                    chat_container = st.container(height=400)
+                    with chat_container:
+                        for message in st.session_state.news_chat_history:
+                            with st.chat_message(message["role"]):
+                                st.markdown(message["content"])
+                    
+                    # React to user input
+                    if prompt := st.chat_input(f"Задайте вопрос об анализе новостей {results['ticker']}..."):
+                        st.session_state.news_chat_history.append({"role": "user", "content": prompt})
+                        with chat_container:
+                            with st.chat_message("user"):
+                                st.markdown(prompt)
+                        
+                        with st.spinner("🤖 AI-Финансовый эксперт думает..."):
+                            response_content = "" 
+                            try:
+                                agent = initialize_finrobot_agent()
+                                if agent is None:
+                                    response_content = "Ошибка: Не удалось инициализировать AI-агента."
+                                else:
+                                    analysis_data = st.session_state.news_analysis_results
+                                    summaries_list = analysis_data['analyzed_summaries_sentiment']
+                                    formatted_summaries = "\n".join([
+                                        f"- Тональность: {s['label']} (Балл: {s['score']:+.2f}), Сводка: {s['summary'][:200]}..."
+                                        for s in summaries_list
+                                    ])
+                                    max_prompt_summaries = 50 
+                                    if len(summaries_list) > max_prompt_summaries:
+                                        formatted_summaries = "\n".join([
+                                        f"- Тональность: {s['label']} (Балл: {s['score']:+.2f}), Сводка: {s['summary'][:200]}..."
+                                        for s in summaries_list[:max_prompt_summaries]
+                                    ]) + f"\n... (еще {len(summaries_list) - max_prompt_summaries} новостей не показано в промпте)"
                                     
-                                    n_examples = 3
-                                    # Sorting is needed again as it's not stored sorted
-                                    news_with_sentiment.sort(key=lambda x: x['score'], reverse=True)
-                                    positive_examples = [item['summary'] for item in news_with_sentiment if item['score'] > 0][:n_examples]
-                                    negative_examples = [item['summary'] for item in news_with_sentiment if item['score'] < 0][::-1][:n_examples]
-                                    pos_examples_str = "\n".join([f"- {ex[:150]}..." for ex in positive_examples]) if positive_examples else "Нет ярких позитивных примеров"
-                                    neg_examples_str = "\n".join([f"- {ex[:150]}..." for ex in negative_examples]) if negative_examples else "Нет ярких негативных примеров"
-                                    
-                                    llama_prompt = (
-                                        f"Ты - финансовый аналитик. Проанализируй статистику тональности и примеры новостей по активу {data_for_prompt['ticker']}. "
-                                        f"Сформируй краткую сводку (2-4 предложения) на русском языке, объясняющую общую тональность новостного фона и ключевые факторы "
-                                        f"(события/темы из новостей, если возможно их уловить), влияющие на позитивные и негативные настроения.\n\n"
-                                        f"**Общая статистика тональности ({data_for_prompt['actual_start_date'].strftime('%Y-%m-%d')} - {data_for_prompt['actual_end_date'].strftime('%Y-%m-%d')}):**\n"
-                                        f"- Доля позитивных новостей: {data_for_prompt['positive_pct']:.1f}% ({data_for_prompt['positive_count']} шт.)\n"
-                                        f"- Доля негативных новостей: {data_for_prompt['negative_pct']:.1f}% ({data_for_prompt['negative_count']} шт.)\n"
-                                        f"- Доля нейтральных новостей: {data_for_prompt['neutral_pct']:.1f}% ({data_for_prompt['neutral_count']} шт.)\n"
-                                        f"- Средний балл тональности (от -1 до +1): {data_for_prompt['avg_score']:.2f}\n\n"
-                                        f"**Примеры позитивных новостей:**\n{pos_examples_str}\n\n"
-                                        f"**Примеры негативных новостей:**\n{neg_examples_str}\n\n"
-                                        f"**Твоя краткая сводка:**"
+                                    full_prompt = (
+                                        f"Ты - опытный финансовый аналитик. Твоя задача - отвечать на вопросы пользователя об анализе тональности новостей для актива {analysis_data['ticker']}. "
+                                        f"Используй **только** предоставленные ниже данные: общую статистику и список новостных сводок с их тональностью. Отвечай на русском языке.\n\n"
+                                        f"**Общая статистика тональности ({analysis_data['actual_start_date'].strftime('%Y-%m-%d')} - {analysis_data['actual_end_date'].strftime('%Y-%m-%d')}):**\n"
+                                        f"- Доля позитивных: {analysis_data['positive_pct']:.1f}%, Негативных: {analysis_data['negative_pct']:.1f}%, Нейтральных: {analysis_data['neutral_pct']:.1f}%\n"
+                                        f"- Средний балл тональности (от -1 до +1): {analysis_data['avg_score']:.2f}\n\n"
+                                        f"**Проанализированные новостные сводки:**\n{formatted_summaries}\n\n"
+                                        f"**Вопрос пользователя:** {prompt}"
                                     )
                                     
-                                    print("--- PROMPT FOR LLAMA (from session state) ---")
-                                    print(llama_prompt)
-                                    print("--- END PROMPT ---")
+                                    agent_reply = agent.chat(full_prompt) # Ensure .chat is correct
                                     
-                                    response = None
-                                    try:
-                                        # Make sure .chat() is correct method
-                                        response = finrobot_agent.chat(llama_prompt)
-                                        st.success("Ответ от AI получен.")
-                                    except Exception as agent_call_e:
-                                        st.error(f"Ошибка при вызове AI агента ({type(agent_call_e).__name__}): {agent_call_e}")
-                                        traceback.print_exc()
-                                    
-                                    # Store response in session state to persist it
-                                    st.session_state.news_analysis_ai_summary = response 
+                                    if isinstance(agent_reply, dict) and 'content' in agent_reply:
+                                        response_content = agent_reply['content']
+                                    elif isinstance(agent_reply, str):
+                                        response_content = agent_reply
+                                    else:
+                                        response_content = f"Получен неожиданный формат ответа от агента: {type(agent_reply)}"
                                         
-                                except Exception as llm_e:
-                                    st.error(f"Ошибка при подготовке запроса AI: {llm_e}")
-                                    traceback.print_exc()
-                                    st.session_state.news_analysis_ai_summary = {"error": f"Ошибка подготовки запроса: {llm_e}"}
-                        else:
-                            st.error("Не удалось инициализировать AI-агента.")
-                            st.session_state.news_analysis_ai_summary = {"error": "Агент не инициализирован"}
+                            except Exception as e:
+                                response_content = f"Произошла ошибка при обращении к AI: {e}"
+                                traceback.print_exc()
                             
-                    # --- Display AI Summary (conditional on its existence in session state) ---
-                    if st.session_state.get('news_analysis_ai_summary'):
-                        ai_summary = st.session_state.news_analysis_ai_summary
-                        st.subheader("Сводка от AI (Llama3):")
-                        if isinstance(ai_summary, dict) and ai_summary.get('error'):
-                            st.error(f"Ошибка генерации сводки: {ai_summary['error']}")
-                        elif isinstance(ai_summary, dict) and 'content' in ai_summary:
-                            st.markdown(ai_summary['content'])
-                        elif isinstance(ai_summary, str):
-                            st.markdown(ai_summary)
-                        else:
-                            st.warning("Не удалось отобразить ответ AI.")
-                            st.write(ai_summary)
-                    # -------------------------------------------------------------------------
-                    
-                    # Display detailed news table
+                        st.session_state.news_chat_history.append({"role": "assistant", "content": response_content})
+                        st.rerun()
+                    # --- End Chat Interface ---
+
+                    # Display detailed news table (remains inside the results block)
                     with st.expander("Показать новости с оценкой тональности"):
+                        # ... (expander content remains the same) ...
                         df_sentiment = pd.DataFrame(results['analyzed_summaries_sentiment'])
-                        # ... (highlighting logic remains the same) ...
                         def highlight_sentiment(row):
                             score = row['score']
                             if score > 0.1: color = 'background-color: #2a4f38'
@@ -2036,7 +2104,7 @@ else:
                             .format({'score': '{:+.2f}'}),
                             use_container_width=True
                         )
-                # --- End Display Results Block ---
+                # --- End Display Results Block (Corrected Indentation for elif) ---
                 elif st.session_state.get('news_analysis_results') and st.session_state.news_analysis_results.get('error'):
                      # Show error if analysis failed
                      st.error(f"Ошибка анализа новостей: {st.session_state.news_analysis_results['error']}")
