@@ -169,47 +169,35 @@ def fetch_news_from_csv(asset_name, start_date=None, end_date=None, base_news_di
 # --- Function to initialize FinRobot Agent ---
 @st.cache_resource # Cache the agent resource itself
 def initialize_finrobot_agent():
-    """Initializes and returns a FinRobot agent configured with a local LLM server."""
+    """Initializes and returns a FinRobot agent configured with OAI_CONFIG_LIST."""
     try:
-        # --- MODIFIED: Configuration for local LLM ---
-        local_model_name = "llama3" # Change if your model name in Ollama/LM Studio is different
-        local_api_base = "http://localhost:11434/v1" # Change if your local server runs on a different address/port
-
         llm_config = {
-            "config_list": [
-                {
-                    "model": local_model_name,
-                    "base_url": local_api_base,
-                    "api_key": "ollama", # Often required, but value doesn't matter for local non-auth servers
-                }
-            ],
-            "timeout": 300, # Increase timeout for potentially slower local models
-            "temperature": 0.2,
+            "config_list": autogen.config_list_from_json(
+                "OAI_CONFIG_LIST", # Assumes file is in the root directory
+                filter_dict={"model": ["gpt-4-0125-preview"]}, # Or whichever model you have in the list
+            ),
+            "timeout": 120,
+            "temperature": 0.2, # Lower temperature for more factual answers
         }
-        # --- END MODIFICATION ---
-
+        # Create a basic assistant agent
+        # You might want to customize the system message later
         assistant_agent = SingleAssistant(
             name="Portfolio_Analyst_Assistant",
-            # --- MODIFIED System Message ---
-            system_message="""Ты — ИИ-ассистент, эксперт по анализу инвестиционных портфелей. \
-Твоя задача — отвечать на вопросы пользователя, основываясь ИСКЛЮЧИТЕЛЬНО на предоставленных ниже данных анализа портфеля. \
-Отвечай всегда на РУССКОМ языке. Будь точным, кратким и профессиональным.""",
-            # --- END MODIFICATION ---
             llm_config=llm_config,
-            human_input_mode="NEVER",
+            system_message="You are a helpful AI assistant specialized in analyzing portfolio performance data. Answer the user's questions based on the provided portfolio summary. Be concise and clear.",
+            human_input_mode="NEVER", # Agent runs without asking for human input during its process
         )
-        st.success(f"FinRobot agent initialized with local model: {local_model_name} at {local_api_base}") # Add success message
         return assistant_agent
-    except FileNotFoundError: # Keep this for OAI_CONFIG_LIST just in case, though not used now
+    except FileNotFoundError:
         st.error("Error: OAI_CONFIG_LIST file not found. Please ensure it exists in the project root.")
         return None
     except Exception as e:
-        st.error(f"Error initializing FinRobot agent with local LLM: {e}")
-        traceback.print_exc()
-        st.error(f"Ensure your local LLM server (e.g., Ollama, LM Studio) is running and accessible at {local_api_base} and the model '{local_model_name}' is available.") # Add helpful error message
+        st.error(f"Error initializing FinRobot agent: {e}")
+        traceback.print_exc() # Print detailed traceback to console/log
         return None
+# --- End Function to initialize FinRobot Agent ---
 
-# --- Function to format analysis results for LLM ---
+# --- NEW: Function to format analysis results for LLM ---
 def format_portfolio_data_for_llm(analysis_results):
     """Formats the portfolio analysis results into a string for the LLM agent."""
     if not analysis_results or not isinstance(analysis_results, dict):
@@ -268,11 +256,23 @@ def format_portfolio_data_for_llm(analysis_results):
     else:
         summary_parts.append("Данные о ежедневной стоимости портфеля недоступны.")
 
-    # <<< REMOVED holdings formatting logic >>>
-
     return "\n".join(summary_parts)
+# --- End Function to format analysis results for LLM ---
 
 # --- END HELPER FUNCTIONS ---
+
+# <<< NEW: Dummy function for fetching news - REPLACE WITH REAL IMPLEMENTATION >>>
+def fetch_dummy_news(asset_ticker):
+    """Возвращает пример текста новости. Замените реальной логикой получения новостей."""
+    st.warning(f"Примечание: Используются **демонстрационные** новостные данные для {asset_ticker}.")
+    # Пример текста
+    if asset_ticker == "BTCUSDT":
+        return f"Bitcoin (BTCUSDT) price surged above $70,000 amid growing institutional interest. Several large investment firms announced new Bitcoin ETF filings. However, some analysts warn of potential volatility ahead of the upcoming halving event. The overall market sentiment remains cautiously optimistic. Key players like MicroStrategy continue to add to their BTC holdings."
+    elif asset_ticker == "ETHUSDT":
+        return f"Ethereum (ETHUSDT) saw moderate gains, following the general market trend. Discussions around the potential approval of an Ethereum Spot ETF continue, but regulatory uncertainty persists. Network activity remains high, driven by DeFi and NFT sectors. Vitalik Buterin recently commented on the importance of Layer 2 scaling solutions."
+    else:
+        return f"General market news for {asset_ticker}: Crypto markets experienced mixed trading today. Regulatory developments in the US and Asia are being closely watched by investors. Stablecoin regulations are also a hot topic. Overall trading volume was moderate."
+# <<< END DUMMY NEWS FUNCTION >>>
 
 # Конфигурация страницы
 st.set_page_config(
@@ -2117,115 +2117,134 @@ else:
         
     # ... (rest of the page elif blocks) ...
 
-    # --- NEW: Function to initialize FinRobot Agent ---
-    @st.cache_resource # Cache the agent resource itself
-    def initialize_finrobot_agent():
-        """Initializes and returns a FinRobot agent configured with OAI_CONFIG_LIST."""
-        try:
-            llm_config = {
-                "config_list": autogen.config_list_from_json(
-                    "OAI_CONFIG_LIST", # Assumes file is in the root directory
-                    filter_dict={"model": ["gpt-4-0125-preview"]}, # Or whichever model you have in the list
-                ),
-                "timeout": 120,
-                "temperature": 0.2, # Lower temperature for more factual answers
-            }
-            # Create a basic assistant agent
-            # You might want to customize the system message later
-            assistant_agent = SingleAssistant(
-                name="Portfolio_Analyst_Assistant",
-                llm_config=llm_config,
-                system_message="You are a helpful AI assistant specialized in analyzing portfolio performance data. Answer the user's questions based on the provided portfolio summary. Be concise and clear.",
-                human_input_mode="NEVER", # Agent runs without asking for human input during its process
+   
+    # <<< Add block for the new Research page >>>
+    elif st.session_state.active_page == "Исследование":
+        st.header("Исследование альтернативных портфелей")
+        st.markdown("Проанализируйте, как изменилась бы стоимость портфеля, если бы вы инвестировали \\n        указанную **начальную сумму** в **выбранный набор активов** в заданный период.") # Modified description
+
+        # --- Настройки Исследования --- #
+        st.subheader("Параметры симуляции")
+
+        # Load combined data to get available assets (cached)
+        with st.spinner("Загрузка списка доступных активов..."):
+             # Use the same counter as Data & Analysis tab for cache consistency
+             combined_df_research = load_combined_data_cached(st.session_state.get('update_counter', 0))
+
+        if combined_df_research.empty:
+            st.error("Не удалось загрузить данные ('data/data_compare_eda.csv'). Исследование невозможно.")
+        else:
+            available_assets_research = combined_df_research.columns.tolist()
+            # Exclude stablecoin from default selection if present
+            default_risky = [a for a in available_assets_research if a != STABLECOIN_ASSET]
+            assets_options = available_assets_research
+
+            selected_hypothetical_assets = st.multiselect(
+                "Выберите гипотетический набор активов для симуляции:",
+                options=assets_options,
+                # Select first 5 risky assets by default
+                default=default_risky[:min(len(default_risky), 5)],
+                key="research_asset_select",
+                help=f"Выберите активы для включения в симуляцию. {STABLECOIN_ASSET} будет использоваться для нераспределенных средств."
             )
-            return assistant_agent
-        except FileNotFoundError:
-            st.error("Error: OAI_CONFIG_LIST file not found. Please ensure it exists in the project root.")
-            return None
-        except Exception as e:
-            st.error(f"Error initializing FinRobot agent: {e}")
-            traceback.print_exc() # Print detailed traceback to console/log
-            return None
-    # --- End Function to initialize FinRobot Agent ---
 
-    # --- NEW: Function to format analysis results for LLM ---
-    def format_portfolio_data_for_llm(analysis_results):
-        """Formats the portfolio analysis results into a string for the LLM agent."""
-        if not analysis_results or not isinstance(analysis_results, dict):
-            return "Нет данных для анализа или неверный формат."
+            # --- NEW: Initial Investment Input ---
+            initial_investment_amount = st.number_input(
+                "Начальная сумма инвестиций (USD):",
+                min_value=1.0,
+                value=10000.0,
+                step=100.0,
+                format="%.2f",
+                key="research_initial_investment",
+                help="Сумма, с которой начнется симуляция."
+            )
+            # --- End Initial Investment Input ---
 
-        summary_parts = []
+            st.markdown("**Настройки анализа:**")
+            with st.expander("Показать/скрыть параметры анализа"):
+                today_date = datetime.now().date()
+                default_start_date = today_date - timedelta(days=365)
 
-        # Extract metrics (raw numeric data)
-        metrics_df = analysis_results.get('metrics') # Use the raw metrics
-        if metrics_df is not None and isinstance(metrics_df, pd.DataFrame) and not metrics_df.empty:
-            summary_parts.append("**Основные метрики производительности по стратегиям:**")
-            for strategy in metrics_df.index: # Iterate through strategies (index)
-                summary_parts.append(f"\n*Стратегия: {strategy}*" )
-                for metric, value in metrics_df.loc[strategy].items(): # Iterate through metrics for the strategy
-                    if isinstance(value, (int, float)):
-                        # Use original metric names from calculation for formatting clues
-                        if any(p in metric.lower() for p in ['cagr', 'return']):
-                            formatted_value = f"{value:.2%}"
-                        elif any(p in metric.lower() for p in ['volatility', 'drawdown']):
-                             formatted_value = f"{value:.2%}"
-                        elif any(r in metric.lower() for r in ['ratio']):
-                             formatted_value = f"{value:.2f}"
-                        else: # Default for Final Value, Net Profit etc.
-                             formatted_value = f"{value:,.2f}"
-                             if 'value' in metric.lower() or 'profit' in metric.lower():
-                                  formatted_value = f"${formatted_value}" # Add dollar sign
-                    else:
-                         formatted_value = str(value)
-                    summary_parts.append(f"  - {metric}: {formatted_value}")
-            summary_parts.append("\n") 
-        else:
-            summary_parts.append("Метрики производительности недоступны.")
+                col1_params, col2_params = st.columns(2)
+                with col1_params:
+                     sim_start_date = st.date_input("Начальная дата симуляции", value=default_start_date, max_value=today_date - timedelta(days=1), key="research_start_date")
+                     sim_commission = st.number_input("Комиссия за ребалансировку (%) [0.1% = 0.001]", min_value=0.0, max_value=5.0, value=0.1, step=0.01, format="%.3f", key="research_commission")
+                     sim_rebalance_interval = st.number_input("Интервал ребалансировки (дни)", min_value=1, value=20, step=1, key="research_rebalance_interval", help="Для Equal Weight, Markowitz, Oracle")
+                with col2_params:
+                     sim_end_date = st.date_input("Конечная дата симуляции", value=today_date, min_value=sim_start_date + timedelta(days=1) if sim_start_date else None, key="research_end_date")
+                     sim_bank_apr = st.number_input("Годовая ставка банка (%) [20% = 0.2]", min_value=0.0, max_value=100.0, value=20.0, step=0.5, format="%.1f", key="research_bank_apr")
+                     sim_drl_rebalance_interval = st.number_input("Интервал ребалансировки DRL (дни)", min_value=1, value=20, step=1, key="research_drl_interval", help="Для стратегий A2C, PPO, SAC, DDPG")
 
-        # Extract date range and final values from daily values DataFrame
-        daily_values_df = analysis_results.get('portfolio_daily_values')
-        if daily_values_df is not None and isinstance(daily_values_df, pd.DataFrame) and not daily_values_df.empty:
-            start_date = daily_values_df.index.min().strftime('%Y-%m-%d')
-            end_date = daily_values_df.index.max().strftime('%Y-%m-%d')
-            summary_parts.append(f"**Период анализа:** {start_date} - {end_date}\n")
+                sim_commission_rate = sim_commission / 100.0
+                sim_bank_apr_rate = sim_bank_apr / 100.0
 
-            summary_parts.append("**Финальная стоимость портфеля по стратегиям:**")
-            final_values = daily_values_df.iloc[-1] # Get last row
-            # Filter only strategy value columns (usually start with 'Value_')
-            strategy_value_cols = [col for col in daily_values_df.columns if col.startswith('Value_')]
-            for strategy_col in strategy_value_cols:
-                # Try to map column name back to display name if possible (e.g., from metrics index)
-                strategy_name = strategy_col.replace('Value_', '').replace('_', ' ') # Basic name cleanup
-                if metrics_df is not None and not metrics_df.empty:
-                     matching_names = [idx for idx in metrics_df.index if strategy_col.endswith(idx.replace(' ','_').replace('DRL ',''))]
-                     if matching_names: strategy_name = matching_names[0]
-                
-                value = final_values.get(strategy_col, np.nan)
-                if pd.notna(value):
-                     summary_parts.append(f"  - {strategy_name}: ${value:,.2f}")
-            summary_parts.append("\n")
-        else:
-            summary_parts.append("Данные о ежедневной стоимости портфеля недоступны.")
+            if st.button("🚀 Запустить исследование", use_container_width=True, key="research_run_button"):
+                if not selected_hypothetical_assets:
+                     st.warning("Пожалуйста, выберите хотя бы один актив для симуляции.")
+                elif not sim_start_date or not sim_end_date:
+                     st.warning("Пожалуйста, выберите начальную и конечную даты.")
+                elif sim_end_date <= sim_start_date:
+                     st.warning("Конечная дата должна быть позже начальной.")
+                else:
+                     st.session_state['research_results'] = None
+                     st.session_state['research_figure'] = None
 
-        # <<< REMOVED holdings formatting logic >>>
+                     # --- REMOVED User transaction fetching ---
+                     # user_transactions = get_user_transactions(st.session_state.username)
+                     # if not user_transactions: ...
 
-        return "\n".join(summary_parts)
-    # --- End Function to format analysis results for LLM ---
+                     # Define data and model paths (ensure they are correct)
+                     # These should ideally be relative or configured
+                     data_path_research = "data"
+                     drl_models_dir_research = "notebooks/trained_models"
+                     st.caption(f"Путь к данным: {os.path.abspath(data_path_research)}, Путь к моделям DRL: {os.path.abspath(drl_models_dir_research)}")
 
-    # --- HELPER FUNCTIONS (Moved to top after imports) ---
+                     with st.spinner("Выполнение симуляции... Это может занять время."):
+                         try:
+                             # --- UPDATED Call to the analysis function ---
+                             results_summary_hypo, fig_hypo = run_hypothetical_analysis(
+                                 # user_transactions_list=user_transactions, # REMOVED
+                                 initial_investment=initial_investment_amount, # ADDED
+                                 hypothetical_assets=selected_hypothetical_assets,
+                                 start_date_str=sim_start_date.strftime('%Y-%m-%d'),
+                                 end_date_str=sim_end_date.strftime('%Y-%m-%d'),
+                                 data_path=data_path_research, # Pass data path
+                                 bank_apr=sim_bank_apr_rate,
+                                 commission_rate=sim_commission_rate,
+                                 rebalance_interval_days=sim_rebalance_interval,
+                                 drl_rebalance_interval_days=sim_drl_rebalance_interval,
+                                 drl_models_dir=drl_models_dir_research # Pass DRL model path
+                             )
+                             # --- End Updated Call ---
 
-    # <<< NEW: Dummy function for fetching news - REPLACE WITH REAL IMPLEMENTATION >>>
-    def fetch_dummy_news(asset_ticker):
-        """Возвращает пример текста новости. Замените реальной логикой получения новостей."""
-        st.warning(f"Примечание: Используются **демонстрационные** новостные данные для {asset_ticker}.")
-        # Пример текста
-        if asset_ticker == "BTCUSDT":
-            return f"Bitcoin (BTCUSDT) price surged above $70,000 amid growing institutional interest. Several large investment firms announced new Bitcoin ETF filings. However, some analysts warn of potential volatility ahead of the upcoming halving event. The overall market sentiment remains cautiously optimistic. Key players like MicroStrategy continue to add to their BTC holdings."
-        elif asset_ticker == "ETHUSDT":
-            return f"Ethereum (ETHUSDT) saw moderate gains, following the general market trend. Discussions around the potential approval of an Ethereum Spot ETF continue, but regulatory uncertainty persists. Network activity remains high, driven by DeFi and NFT sectors. Vitalik Buterin recently commented on the importance of Layer 2 scaling solutions."
-        else:
-            return f"General market news for {asset_ticker}: Crypto markets experienced mixed trading today. Regulatory developments in the US and Asia are being closely watched by investors. Stablecoin regulations are also a hot topic. Overall trading volume was moderate."
-    # <<< END DUMMY NEWS FUNCTION >>>
+                             if results_summary_hypo is not None and fig_hypo is not None:
+                                  st.session_state['research_results'] = results_summary_hypo
+                                  st.session_state['research_figure'] = fig_hypo
+                                  st.success("Исследование успешно завершено!", icon="✅")
+                             else:
+                                  # Error messages should come from run_hypothetical_analysis
+                                  st.error("Ошибка во время исследования. Проверьте детали ошибки выше или в консоли.")
+                         except Exception as e:
+                             st.error(f"Непредвиденная ошибка при запуске исследования: {e}")
+                             traceback.print_exc()
+
+                st.markdown("--- ")
+                st.subheader("Результаты исследования")
+                # Display logic remains mostly the same
+                if 'research_results' in st.session_state and st.session_state.research_results is not None:
+                     # Display the DataFrame which now contains formatted metrics
+                     st.dataframe(st.session_state.research_results, use_container_width=True)
+
+                if 'research_figure' in st.session_state and st.session_state.research_figure is not None:
+                     st.plotly_chart(st.session_state.research_figure, use_container_width=True)
+                # Modify the info message slightly
+                elif 'research_run_button' not in st.session_state or not st.session_state.get('research_run_button', False):
+                     st.info("Выберите активы, укажите начальную сумму и параметры, затем нажмите кнопку 'Запустить исследование' выше.")
+                elif st.session_state.get('research_results') is None and st.session_state.get('research_figure') is None:
+                     # This case means the button was clicked, but the analysis failed or returned None
+                     st.info("Исследование было запущено, но не вернуло результатов. Проверьте параметры и сообщения об ошибках выше.")
+
+            pass # End of Research page block
 
     '''
     poetry run streamlit run auth_app.py
