@@ -3,3 +3,4 @@ results
 trained_models
 tensorboard_log
 datasets
+news_data
