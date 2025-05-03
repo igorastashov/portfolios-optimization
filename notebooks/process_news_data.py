@@ -98,7 +98,7 @@ if __name__ == "__main__":
     news_data_base_dir = os.path.join(script_dir, "news_data")
     # news_data_base_dir = "news_data"  # Use this if running script from notebooks/ manually
 
-    assets_to_process = ["btc", "eth", "ltc", "xrp"] # Add other assets as needed
+    assets_to_process = ["btc", "cake", "eth", "hbar", "ltc", "sol",  "usdt", "xrp"] # Add other assets as needed
 
     print(f"Base directory for news data: {news_data_base_dir}")
 
