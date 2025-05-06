@@ -4,3 +4,4 @@ __pycache__
 FinRobot/
 OAI_CONFIG_LIST
 .env
+catboost_info
