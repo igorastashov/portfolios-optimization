@@ -708,6 +708,7 @@ else:
                     df['date_index'] = parsed_ms.fillna(parsed_str)
                     df.dropna(subset=['date_index'], inplace=True)
                     df = df.set_index('date_index')
+                    df = df[~df.index.duplicated(keep='first')]  # Ensure unique index for concat
                     # --- End Robust Date Parsing ---
 
                     df = df[['Close']].rename(columns={'Close': f'{asset}_Price'})
