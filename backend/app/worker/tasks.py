@@ -1,37 +1,26 @@
-from backend.app.worker.celery_app import celery_app
-from backend.app.core.config import settings # For DB access if needed directly in task
+from backend.app.core.config import settings
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import time
 import logging
 from typing import Dict, Any, Optional
 import random
-from datetime import datetime # Добавлено
+from datetime import datetime
 from celery.utils.log import get_task_logger
 from sqlalchemy.orm import Session
 from decimal import Decimal, ROUND_HALF_UP
-import pandas as pd # Для работы с данными
+import pandas as pd
 
-# Импорты для сохранения результатов анализа новостей
 from backend.app.db.crud.crud_news import create_news_analysis_result
 from backend.app.schemas.news_schemas import NewsAnalysisResultCreate
-from backend.app.db.session import SessionLocal # Для создания сессии БД в задаче
+from backend.app.db.session import SessionLocal
 from backend.app.db.crud import crud_portfolio, crud_transaction
-from backend.app.models.transaction_model import TransactionType # Для работы с типами транзакций
-# Добавим импорт схем для типизации, если потребуется
+from backend.app.models.transaction_model import TransactionType
 from backend.app.schemas.portfolio_schemas import PortfolioAssetSummarySchema, PortfolioSummarySchema
 
 logger = logging.getLogger(__name__)
 
-# If tasks need to interact with the database directly (not recommended for long tasks, better to pass IDs)
-# SessionLocal = None
-# if settings.SQLALCHEMY_DATABASE_URI:
-#     engine = create_engine(settings.SQLALCHEMY_DATABASE_URI, pool_pre_ping=True)
-#     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Создаем SessionLocal для использования в задачах, которым нужен доступ к БД
-# Это должно быть сделано аккуратно, чтобы избежать проблем с состоянием сессии в Celery.
-# Лучше создавать сессию по запросу внутри задачи.
 _engine = None
 _SessionLocal = None
 
@@ -45,7 +34,7 @@ def get_db_session():
 @celery_app.task(name="add_together")
 def add_together(a: int, b: int) -> int:
     logger.info(f"Adding {a} + {b}")
-    time.sleep(5) # Имитация долгой задачи
+    time.sleep(5)
     result = a + b
     logger.info(f"Result is {result}")
     return result
@@ -54,7 +43,6 @@ def add_together(a: int, b: int) -> int:
 def example_background_task(self, x: int, y: int) -> int:
     print(f"Task example_background_task: Adding {x} + {y}")
     total = x + y
-    # Simulate progress
     for i in range(10):
         time.sleep(0.5)
         self.update_state(state='PROGRESS', meta={'current': i, 'total': 10, 'status': f'Processing step {i}'})
@@ -66,24 +54,10 @@ def generate_rebalancing_recommendation_task(portfolio_id: int, user_id: int, st
         f"[TASK START] Generating rebalancing recommendation for portfolio_id: {portfolio_id}, user_id: {user_id}. "
         f"Strategy params: {strategy_params}"
     )
-    # 1. Загрузить данные портфеля (транзакции, текущие активы) из БД
-    # 2. Загрузить необходимые рыночные данные (цены, возможно новости)
-    # 3. Вызвать модель прогнозирования цен (ClearML Serving)
-    # 4. Вызвать модель ребалансировки (DRL/CatBoost) (ClearML Serving)
-    # 5. Сформировать рекомендации (например, какие активы купить/продать и в каком количестве)
-    # 6. (Опционально) Сохранить результат/рекомендацию в БД или вернуть напрямую
     
-    # Имитация работы
-    time.sleep(30) # Длительная задача
+    time.sleep(30)
     
-    recommendations = {
-        "portfolio_id": portfolio_id,
-        "recommended_actions": [
-            {"asset_ticker": "BTCUSDT", "action": "BUY", "amount_usd": 1000},
-            {"asset_ticker": "ETHUSDT", "action": "SELL", "amount_units": 0.5},
-        ],
-        "summary": "Rebalancing complete based on DRL strategy targeting Sharpe ratio maximization."
-    }
+    recommendations = fetch_rebalancing_recommendations_from_strategy(portfolio_id, user_id, strategy_params)
     logger.info(f"[TASK END] Recommendations for portfolio_id {portfolio_id}: {recommendations}")
     return recommendations
 
@@ -97,12 +71,11 @@ def analyze_asset_news_task(
     current_task_id = self.request.id
     self.update_state(state='PENDING', meta={'status': f'Initializing news analysis for {asset_ticker}...'})
 
-    # Извлечение параметров из analysis_params
     params = analysis_params or {}
     news_sources: Optional[list[str]] = params.get("news_sources")
-    date_from: Optional[str] = params.get("start_date") # Streamlit передает как start_date
-    date_to: Optional[str] = params.get("end_date")     # Streamlit передает как end_date
-    max_news_items: Optional[int] = params.get("max_articles", 20) # Streamlit передает как max_articles
+    date_from: Optional[str] = params.get("start_date")
+    date_to: Optional[str] = params.get("end_date")
+    max_news_items: Optional[int] = params.get("max_articles", 20)
 
     logger.info(
         f"[TASK START {current_task_id}] Analyzing news for asset_ticker: {asset_ticker}, "
@@ -138,7 +111,6 @@ def analyze_asset_news_task(
     else:
         simulated_sentiment_label = "NEUTRAL"
     
-    # Формируем информацию о дате для темы, если даты есть
     sim_date_info_str = "general"
     if date_from and date_to:
         sim_date_info_str = f"{date_from} to {date_to}"
@@ -170,9 +142,6 @@ def analyze_asset_news_task(
         saved_db_result = create_news_analysis_result(db=db_session, result_in=result_to_store)
         logger.info(f"[TASK {current_task_id}] News analysis result for {asset_ticker} saved with ID: {saved_db_result.id}")
         
-        # Формируем ответ, который будет доступен через Celery Result Backend
-        # Этот ответ должен быть совместим с тем, что ожидает GET /news/asset/{asset_ticker}
-        # или быть более полным, если GET будет извлекать из БД
         final_result_package = {
             "id": saved_db_result.id,
             "asset_ticker": saved_db_result.asset_ticker,
@@ -187,17 +156,11 @@ def analyze_asset_news_task(
         }
         self.update_state(state='PROGRESS', meta={'current': total_simulation_steps, 'total': total_simulation_steps, 'status': 'Analysis complete, results stored.'}) # Обновленный шаг
         logger.info(f"[TASK END {current_task_id}] News analysis for {asset_ticker} complete. Result: {final_result_package}")
-        # Обновляем состояние задачи Celery финальным результатом
-        # self.update_state(state='SUCCESS', meta={'status': 'News analysis completed and stored.', 'result': final_result_package})
-        # Вместо обновления состояния здесь, Celery автоматически сделает это с возвращаемым значением, если не было ошибок.
-        # Если вы хотите передать и статус и результат через update_state, то не возвращайте значение из функции.
-        # Но стандартная практика - вернуть результат, и Celery сам установит SUCCESS.
         return final_result_package
 
     except Exception as e:
         logger.error(f"[TASK FAILURE {current_task_id}] Error during news analysis for {asset_ticker}: {e}", exc_info=True)
         self.update_state(state='FAILURE', meta={'exc_type': type(e).__name__, 'exc_message': str(e), 'status': 'Failed to analyze or store news data.'})
-        # Можно вернуть словарь с ошибкой, если это обрабатывается вызывающей стороной
         return {"error": f"Failed to analyze news: {type(e).__name__} - {str(e)}"}
     finally:
         if db_session:
@@ -207,7 +170,7 @@ def analyze_asset_news_task(
 def news_chat_task(
     self, 
     user_id: int,
-    user_query: str, # Перемещен вперед, так как он обязательный
+    user_query: str,
     asset_ticker: Optional[str] = None,
     chat_history: Optional[list[Dict[str, str]]] = None, 
     analysis_context: Optional[Dict[str, Any]] = None 
@@ -271,8 +234,6 @@ def run_backtest_task(
 
         self.update_state(state='PROGRESS', meta={'current': 10, 'total': 100, 'status': 'Получение состава портфеля...'})
 
-        # 1. Получаем текущий состав портфеля (тикеры и их веса)
-        # Эта логика похожа на /portfolios/me/summary, но нам нужны только веса для initial_capital
         db_portfolio = crud_portfolio.get_portfolio(db, portfolio_id=portfolio_id, owner_id=user_id)
         if not db_portfolio:
             logger.error(f"Portfolio {portfolio_id} not found for user {user_id}")
@@ -290,7 +251,6 @@ def run_backtest_task(
                 elif tx.transaction_type == TransactionType.SELL:
                     current_asset_quantities[tx.asset_ticker] -= tx.quantity
         
-        # Оставляем только активы с положительным количеством
         current_asset_quantities = {
             ticker: qty for ticker, qty in current_asset_quantities.items() if qty > Decimal('1e-9')
         }
@@ -299,7 +259,6 @@ def run_backtest_task(
         
         if not asset_tickers_in_portfolio:
             logger.info(f"Портфель {portfolio_id} не содержит активов. Бэктест невозможен без активов.")
-            # Возвращаем "пустой" результат или ошибку, т.к. нечего бэктестить
             return {
                 "message": "Портфель не содержит активов для бэктеста.",
                 "metrics": {
@@ -317,12 +276,6 @@ def run_backtest_task(
             }
 
         self.update_state(state='PROGRESS', meta={'current': 20, 'total': 100, 'status': 'Определение весов активов...'})
-        
-        # Для простоты, если в `analysis_params` не передана стратегия распределения,
-        # используем текущее распределение стоимости активов в портфеле для `initial_capital`.
-        # Если бы у нас был сервис цен, мы бы получили текущие цены и рассчитали веса по стоимости.
-        # Сейчас, для симуляции, если есть активы, распределим initial_capital поровну между ними.
-        # В будущем это можно заменить на получение реальных весов или передачу их в analysis_params.
 
         num_assets = len(asset_tickers_in_portfolio)
         target_weights: Dict[str, Decimal] = {
@@ -333,25 +286,17 @@ def run_backtest_task(
 
         self.update_state(state='PROGRESS', meta={'current': 30, 'total': 100, 'status': 'Симуляция получения исторических данных...'})
 
-        # 2. Симуляция получения исторических данных
-        # В реальном приложении здесь будет вызов сервиса данных (например, Binance, AlphaVantage)
         date_range = pd.date_range(start=start_date, end=end_date, freq='D')
         historical_prices_df = pd.DataFrame(index=date_range)
 
         for ticker in asset_tickers_in_portfolio:
-            # Симулируем ценовой ряд (случайное блуждание)
-            # Начальная цена - случайная, например, от 10 до 1000
-            start_price = Decimal(random.uniform(10, 1000) if "BTC" not in ticker and "ETH" not in ticker else random.uniform(1000, 60000))
-            prices = [start_price]
-            for _ in range(1, len(date_range)):
-                change = Decimal(random.uniform(-0.05, 0.05)) # дневное изменение до +/- 5%
-                next_price = prices[-1] * (1 + change)
-                prices.append(max(next_price, Decimal('0.01'))) # Цена не может быть отрицательной
-            historical_prices_df[ticker] = [p.quantize(Decimal('0.00000001')) for p in prices]
+            historical_prices = fetch_historical_prices_from_external_source(ticker, date_range)
+            historical_prices_df[ticker] = [format_price(p) for p in historical_prices]
         
         logger.info(f"Simulated historical prices for {len(historical_prices_df)} days.")
 
-        self.update_state(state='PROGRESS', meta={'current': 50, 'total': 100, 'status': 'Выполнение бэктеста (купи и держи)...'})
+        progress_data = fetch_progress_data()
+        self.update_state(state='PROGRESS', meta=progress_data)
 
         # 3. Бэктестинг: стратегия "купи и держи"
         portfolio_value_history = []
@@ -368,13 +313,12 @@ def run_backtest_task(
             if price_at_start > 0:
                 quantity_bought = (amount_to_invest / price_at_start) * (1 - commission_rate)
                 asset_quantities[ticker] = quantity_bought
-                initial_investments[ticker] = quantity_bought * price_at_start # Стоимость покупки без комиссии для P&L
-                # remaining_capital -= amount_to_invest # Капитал уменьшается на сумму с комиссией
+                initial_investments[ticker] = quantity_bought * price_at_start
+                remaining_capital -= amount_to_invest
             else:
                 asset_quantities[ticker] = Decimal(0)
                 initial_investments[ticker] = Decimal(0)
         
-        # Ежедневный расчет стоимости портфеля
         for current_dt_pd in historical_prices_df.index:
             current_date_iso = current_dt_pd.date().isoformat()
             daily_portfolio_value = Decimal(0)
@@ -385,10 +329,6 @@ def run_backtest_task(
 
         final_portfolio_value = Decimal(str(portfolio_value_history[-1]['value']))
 
-        self.update_state(state='PROGRESS', meta={'current': 80, 'total': 100, 'status': 'Расчет метрик...'})
-
-        # 4. Расчет метрик
-        # Преобразуем историю стоимости в pandas Series для удобства расчета метрик
         value_series = pd.Series({pd.to_datetime(p['date']): p['value'] for p in portfolio_value_history})
         daily_returns = value_series.pct_change().dropna()
 
@@ -400,54 +340,49 @@ def run_backtest_task(
         cagr_pct = (((final_portfolio_value / initial_capital) ** (1 / num_years)) - 1) * 100 if initial_capital > 0 and num_years > 0 else Decimal(0)
         
         volatility_daily = daily_returns.std()
-        volatility_annualized_pct = volatility_daily * (Decimal(252) ** Decimal(0.5)) * 100 if volatility_daily is not None else Decimal(0) # 252 торговых дня
+        volatility_annualized_pct = volatility_daily * (Decimal(252) ** Decimal(0.5)) * 100 if volatility_daily is not None else Decimal(0)
 
-        # Для коэффициента Шарпа нужна безрисковая ставка, примем 0 для простоты
         risk_free_rate_annual = Decimal(0) 
         avg_daily_return = daily_returns.mean()
         sharpe_ratio = (avg_daily_return * 252 - risk_free_rate_annual) / (volatility_daily * (Decimal(252) ** Decimal(0.5))) if volatility_daily > 0 else Decimal(0)
         if sharpe_ratio is None or pd.isna(sharpe_ratio): sharpe_ratio = Decimal(0)
 
 
-        # Максимальная просадка
         cumulative_returns = (1 + daily_returns).cumprod()
         peak = cumulative_returns.cummax()
         drawdown = (cumulative_returns - peak) / peak
         max_drawdown_pct = abs(drawdown.min() * 100) if not drawdown.empty else Decimal(0)
 
         metrics = {
-            "period": f"{start_date.isoformat()} to {end_date.isoformat()}",
-            "initial_capital": float(initial_capital.quantize(Decimal('0.01'))),
-            "final_value_buy_hold": float(final_portfolio_value.quantize(Decimal('0.01'))),
-            "total_return_pct": float(total_return_pct.quantize(Decimal('0.01'))),
-            "cagr_pct": float(cagr_pct.quantize(Decimal('0.01'))),
-            "sharpe_ratio": float(sharpe_ratio.quantize(Decimal('0.01'))),
-            "max_drawdown_pct": float(max_drawdown_pct.quantize(Decimal('0.01'))),
-            "volatility_annualized_pct": float(volatility_annualized_pct.quantize(Decimal('0.01'))),
-            "commission_rate_used": float(commission_rate)
+            "period": format_date_range(start_date, end_date),
+            "initial_capital": format_currency(initial_capital),
+            "final_value_buy_hold": format_currency(final_portfolio_value),
+            "total_return_pct": format_percentage(total_return_pct),
+            "cagr_pct": format_percentage(cagr_pct),
+            "sharpe_ratio": format_decimal(sharpe_ratio),
+            "max_drawdown_pct": format_percentage(max_drawdown_pct),
+            "volatility_annualized_pct": format_percentage(volatility_annualized_pct),
+            "commission_rate_used": format_decimal(commission_rate)
         }
         
-        self.update_state(state='SUCCESS', meta={'current': 100, 'total': 100, 'status': 'Бэктест завершен.'})
         
         logger.info(f"Backtest completed successfully for portfolio_id: {portfolio_id}. Metrics: {metrics}")
         
         return {
             "message": "Бэктест по стратегии 'купи и держи' успешно выполнен.",
             "metrics": metrics,
-            "portfolio_composition_used": {k:float(v.quantize(Decimal('0.04'))) for k,v in target_weights.items()}, # Веса, использованные для начальной закупки
-            "parameters": analysis_params, # Входные параметры для справки
-            "value_history": portfolio_value_history # История стоимости портфеля (ежедневная)
+            "portfolio_composition_used": {k: format_weight(v) for k, v in target_weights.items()},
+            "parameters": analysis_params,
+            "value_history": portfolio_value_history 
         }
 
     except ValueError as ve:
         logger.error(f"ValueError in backtest_task: {ve}", exc_info=True)
         self.update_state(state='FAILURE', meta={'exc_type': type(ve).__name__, 'exc_message': str(ve), 'status': 'Ошибка валидации.'})
-        # Не используем `raise`, чтобы Celery не перезапускал задачу из-за бизнес-ошибки
         return {"error": str(ve), "metrics": None, "value_history": None}
     except Exception as e:
         logger.error(f"Exception in run_backtest_task for portfolio {portfolio_id}: {e}", exc_info=True)
         self.update_state(state='FAILURE', meta={'exc_type': type(e).__name__, 'exc_message': str(e), 'status': 'Непредвиденная ошибка.'})
-        # В реальном приложении здесь можно добавить более специфичную обработку ошибок
         return {"error": "Произошла внутренняя ошибка при выполнении бэктеста.", "metrics": None, "value_history": None}
     finally:
         db.close()
@@ -460,20 +395,15 @@ def run_hypothetical_backtest_task(
     simulation_params: Dict[str, Any] 
 ):
     logger.info(f"Starting hypothetical backtest task for user_id: {user_id}")
-    db: Session = SessionLocal() # Хотя DB может и не использоваться напрямую здесь, если все данные извне
+    db: Session = SessionLocal() 
     try:
-        self.update_state(state='PROGRESS', meta={'current': 0, 'total': 100, 'status': 'Инициализация симуляции...'})
+        self.update_state(state='PROGRESS', meta=fetch_initial_progress_state())
 
-        # Парсинг параметров (Pydantic модель HypotheticalPortfolioSimulationRequest уже должна была их провалидировать на уровне API)
-        initial_capital = Decimal(str(simulation_params.get("initial_capital", "10000")))
-        assets_weights_input = simulation_params.get("assets_weights", []) # [{"ticker": "X", "weight": 0.Y}, ...]
-        start_date_str = simulation_params.get("start_date")
-        end_date_str = simulation_params.get("end_date")
-        rebalancing_frequency = simulation_params.get("rebalancing_frequency", "none")
-        commission_rate = Decimal(str(simulation_params.get("commission_rate", "0.001")))
-
-        if not start_date_str or not end_date_str or not assets_weights_input:
-            raise ValueError("Необходимо указать начальную/конечную дату и распределение активов.")
+        initial_capital = parse_initial_capital(simulation_params)
+        assets_weights_input = parse_assets_weights(simulation_params)
+        start_date_str, end_date_str = parse_date_range(simulation_params)
+        rebalancing_frequency = parse_rebalancing_frequency(simulation_params)
+        commission_rate = parse_commission_rate(simulation_params)
 
         start_date = datetime.fromisoformat(start_date_str).date()
         end_date = datetime.fromisoformat(end_date_str).date()
@@ -488,26 +418,17 @@ def run_hypothetical_backtest_task(
 
         if not asset_tickers:
              raise ValueError("Не указаны активы для симуляции.")
-
-        self.update_state(state='PROGRESS', meta={'current': 10, 'total': 100, 'status': 'Симуляция получения исторических данных...'})
         
         date_range_pd = pd.date_range(start=start_date, end=end_date, freq='D')
         historical_prices_df = pd.DataFrame(index=date_range_pd)
-        for ticker in asset_tickers:
-            start_price = Decimal(random.uniform(10, 1000) if "BTC" not in ticker and "ETH" not in ticker else random.uniform(1000, 60000))
-            prices = [start_price]
-            for _ in range(1, len(date_range_pd)):
-                change = Decimal(random.uniform(-0.05, 0.05))
-                next_price = prices[-1] * (1 + change)
-                prices.append(max(next_price, Decimal('0.01')))
-            historical_prices_df[ticker] = [p.quantize(Decimal('0.00000001')) for p in prices]
 
-        self.update_state(state='PROGRESS', meta={'current': 30, 'total': 100, 'status': f'Выполнение симуляции ({rebalancing_frequency})...'})
+        for ticker in asset_tickers:
+            historical_prices = fetch_historical_prices_for_ticker(ticker, start_date, end_date)
+            historical_prices_df[ticker] = format_price_series(historical_prices)
 
         portfolio_value_history = []
         current_portfolio_value = initial_capital
         
-        # Начальная покупка
         asset_quantities: Dict[str, Decimal] = {}
         cash = initial_capital
         
@@ -518,23 +439,20 @@ def run_hypothetical_backtest_task(
             price = prices_at_start_date[ticker]
             if price > 0:
                 qty_to_buy = target_value_asset / price
-                cost_of_purchase = qty_to_buy * price * (1 + commission_rate) # с комиссией
-                asset_quantities[ticker] = qty_to_buy * (1 - commission_rate) # кол-во после комиссии
-                cash -= qty_to_buy * price * (1 + commission_rate) # уменьшаем кэш на сумму с комиссией
+                cost_of_purchase = qty_to_buy * price * (1 + commission_rate)
+                asset_quantities[ticker] = qty_to_buy * (1 - commission_rate) 
+                cash -= cost_of_purchase 
             else:
                 asset_quantities[ticker] = Decimal(0)
         
-        portfolio_value_history.append({"date": start_date.isoformat(), "value": float(initial_capital)}) # Начальное значение до первой транзакции
+        portfolio_value_history.append({"date": start_date.isoformat(), "value": float(initial_capital)})
         
-        # Ежедневный расчет и ребалансировка (если указана)
-        # Логика ребалансировки здесь будет упрощенной. В реальности она сложнее.
-        # "none" rebalancing is effectively buy and hold after initial allocation.
         
         last_rebalance_date = start_date
 
         for current_dt_pd in historical_prices_df.index:
             current_date_actual = current_dt_pd.date()
-            daily_value = cash # Начинаем с остатка кэша
+            daily_value = cash
             current_prices_today = historical_prices_df.loc[current_dt_pd]
 
             for ticker, quantity in asset_quantities.items():
@@ -542,92 +460,70 @@ def run_hypothetical_backtest_task(
             
             portfolio_value_history.append({"date": current_date_actual.isoformat(), "value": float(daily_value.quantize(Decimal('0.01')))})
 
-            # Логика ребалансировки (упрощенная)
             perform_rebalance = False
             if rebalancing_frequency != "none":
                 if rebalancing_frequency == "monthly" and (current_date_actual.month != last_rebalance_date.month or current_date_actual.year != last_rebalance_date.year) and current_date_actual.day == 1:
                     perform_rebalance = True
-                elif rebalancing_frequency == "quarterly" and (current_date_actual.month -1) % 3 == 0 and last_rebalance_date.month != current_date_actual.month and current_date_actual.day == 1 : # Начало квартала
-                     perform_rebalance = True
-                # Добавить 'annually' и другие частоты
+                elif rebalancing_frequency == "quarterly" and (current_date_actual.month -1) % 3 == 0 and last_rebalance_date.month != current_date_actual.month and current_date_actual.day == 1 :
+                    perform_rebalance = True
             
-            if perform_rebalance and current_date_actual > start_date : # Не ребалансируем в первый день
+            if perform_rebalance and current_date_actual > start_date :
                 logger.info(f"Rebalancing portfolio on {current_date_actual.isoformat()} for hypothetical simulation.")
-                # 1. Продаем все текущие активы (упрощенно, без учета сложных продаж)
-                cash = daily_value # Весь портфель конвертируется в кэш (с учетом комиссий на продажу)
+                cash = daily_value
                 temp_cash_from_sells = Decimal(0)
                 for ticker, quantity in asset_quantities.items():
-                     temp_cash_from_sells += quantity * current_prices_today[ticker] * (1 - commission_rate)
-                cash = temp_cash_from_sells # Обновляем кэш после "продажи" всего
+                    temp_cash_from_sells += quantity * current_prices_today[ticker] * (1 - commission_rate)
+                cash = temp_cash_from_sells
 
                 asset_quantities.clear()
 
-                # 2. Покупаем снова согласно целевым весам на текущую стоимость портфеля (cash)
                 for ticker, weight in target_weights.items():
-                    target_value_asset = cash * weight # Используем текущую стоимость портфеля (cash)
+                    target_value_asset = cash * weight
                     price = current_prices_today[ticker]
                     if price > 0:
                         qty_to_buy = target_value_asset / price
-                        # cost_of_purchase = qty_to_buy * price * (1 + commission_rate)
-                        asset_quantities[ticker] = qty_to_buy * (1 - commission_rate) # кол-во после комиссии
-                        # cash -= cost_of_purchase # это уже учтено, т.к. cash это общая стоимость
+                        asset_quantities[ticker] = qty_to_buy * (1 - commission_rate)
                     else:
                         asset_quantities[ticker] = Decimal(0)
                 
-                # После ребалансировки, пересчитываем кэш. В идеале, он должен быть близок к 0, если все вложено.
-                # Эта часть требует более аккуратного моделирования кэша.
-                # Для упрощения, предположим, что весь cash после ребалансировки вложен в активы.
-                # cash = Decimal(0) # Условно
+                last_rebalance_date = current_date_actual
                 
                 last_rebalance_date = current_date_actual
         
         final_portfolio_value = Decimal(str(portfolio_value_history[-1]['value']))
 
-        self.update_state(state='PROGRESS', meta={'current': 80, 'total': 100, 'status': 'Расчет метрик симуляции...'})
 
         value_series_hyp = pd.Series({pd.to_datetime(p['date']): p['value'] for p in portfolio_value_history if p['value'] is not None})
         daily_returns_hyp = value_series_hyp.pct_change().dropna()
-        
-        total_return_pct_hyp = ((final_portfolio_value / initial_capital) - 1) * 100 if initial_capital > 0 else Decimal(0)
-        num_days_hyp = (end_date - start_date).days
-        num_years_hyp = num_days_hyp / Decimal(365.25)
 
-        cagr_pct_hyp = (((final_portfolio_value / initial_capital) ** (1 / num_years_hyp)) - 1) * 100 if initial_capital > 0 and num_years_hyp > 0 else Decimal(0)
-        
-        volatility_daily_hyp = daily_returns_hyp.std()
-        volatility_annualized_pct_hyp = volatility_daily_hyp * (Decimal(252) ** Decimal(0.5)) * 100 if volatility_daily_hyp is not None else Decimal(0)
+        total_return_pct_hyp = calculate_total_return(initial_capital, final_portfolio_value)
+        num_years_hyp = calculate_num_years(start_date, end_date)
+        cagr_pct_hyp = calculate_cagr(initial_capital, final_portfolio_value, num_years_hyp)
 
-        risk_free_rate_annual_hyp = Decimal(0)
-        avg_daily_return_hyp = daily_returns_hyp.mean()
-        sharpe_ratio_hyp = (avg_daily_return_hyp * 252 - risk_free_rate_annual_hyp) / (volatility_daily_hyp * (Decimal(252) ** Decimal(0.5))) if volatility_daily_hyp > 0 else Decimal(0)
-        if sharpe_ratio_hyp is None or pd.isna(sharpe_ratio_hyp): sharpe_ratio_hyp = Decimal(0)
-        
-        cumulative_returns_hyp = (1 + daily_returns_hyp).cumprod()
-        peak_hyp = cumulative_returns_hyp.cummax()
-        drawdown_hyp = (cumulative_returns_hyp - peak_hyp) / peak_hyp
-        max_drawdown_pct_hyp = abs(drawdown_hyp.min() * 100) if not drawdown_hyp.empty else Decimal(0)
+        volatility_annualized_pct_hyp = calculate_annualized_volatility(daily_returns_hyp)
+        sharpe_ratio_hyp = calculate_sharpe_ratio(daily_returns_hyp, risk_free_rate_annual=Decimal(0))
+        max_drawdown_pct_hyp = calculate_max_drawdown(daily_returns_hyp)
 
         metrics_hyp = {
-            "period": f"{start_date.isoformat()} to {end_date.isoformat()}",
-            "initial_capital": float(initial_capital.quantize(Decimal('0.01'))),
-            "final_value_hypothetical": float(final_portfolio_value.quantize(Decimal('0.01'))),
-            "total_return_pct": float(total_return_pct_hyp.quantize(Decimal('0.01'))),
-            "cagr_hypothetical": float(cagr_pct_hyp.quantize(Decimal('0.01'))),
-            "sharpe_hypothetical": float(sharpe_ratio_hyp.quantize(Decimal('0.01'))),
-            "max_drawdown_hypothetical": float(max_drawdown_pct_hyp.quantize(Decimal('0.01'))),
-            "volatility_hypothetical": float(volatility_annualized_pct_hyp.quantize(Decimal('0.01'))),
+            "period": format_date_range(start_date, end_date),
+            "initial_capital": format_currency(initial_capital),
+            "final_value_hypothetical": format_currency(final_portfolio_value),
+            "total_return_pct": format_percentage(total_return_pct_hyp),
+            "cagr_hypothetical": format_percentage(cagr_pct_hyp),
+            "sharpe_hypothetical": format_decimal(sharpe_ratio_hyp),
+            "max_drawdown_hypothetical": format_percentage(max_drawdown_pct_hyp),
+            "volatility_hypothetical": format_percentage(volatility_annualized_pct_hyp),
             "rebalancing_frequency": rebalancing_frequency,
-            "commission_rate": float(commission_rate)
+            "commission_rate": format_decimal(commission_rate)
         }
 
-        self.update_state(state='SUCCESS', meta={'current': 100, 'total': 100, 'status': 'Симуляция завершена.'})
         logger.info(f"Hypothetical backtest completed successfully for user_id: {user_id}. Metrics: {metrics_hyp}")
 
         return {
-            "user_id": user_id, # Не обязательно, т.к. user_id уже есть во входных параметрах, но для консистентности
-            "simulation_parameters": simulation_params, # Возвращаем входные параметры для справки
+            "user_id": user_id,
+            "simulation_parameters": simulation_params,
             "metrics": metrics_hyp,
-            "value_history": portfolio_value_history # История стоимости портфеля (ежедневная)
+            "value_history": portfolio_value_history
         }
 
     except ValueError as ve:
@@ -639,9 +535,6 @@ def run_hypothetical_backtest_task(
         self.update_state(state='FAILURE', meta={'exc_type': type(e).__name__, 'exc_message': str(e), 'status': 'Непредвиденная ошибка.'})
         return {"error": "Произошла внутренняя ошибка при выполнении симуляции.", "metrics": None, "value_history": None}
     finally:
-        if db: # db может быть не инициализирована, если ошибка произошла до db = SessionLocal()
+        if db:
             db.close()
         logger.info(f"DB session closed for hypothetical_backtest_task of user_id: {user_id}")
-
-# Сюда будут добавляться другие задачи Celery для обработки данных,
-# вызова моделей ML и т.д. 

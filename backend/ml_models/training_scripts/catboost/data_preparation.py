@@ -1,4 +1,3 @@
-# CatBoost data preparation script integrating logic from research notebook
 import argparse
 import pandas as pd
 import numpy as np
@@ -7,17 +6,16 @@ from clearml import Task, Dataset, Artifact
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
-import ta # For Technical Analysis
-from ta.utils import dropna as ta_dropna # Utility to remove NaNs created by TA indicators
+import ta
+from ta.utils import dropna as ta_dropna
 import json
 import os
 
-# Настройка логирования
 log = logging.getLogger(__name__)
 
 
 def generate_lags(df: pd.DataFrame, column_name: str, lags: list) -> pd.DataFrame:
-    """Генерирует лаговые признаки для указанной колонки."""
+    """Generates lag features for the specified column."""
     df_copy = df.copy()
     for lag in lags:
         df_copy[f'{column_name}_lag_{lag}h'] = df_copy[column_name].shift(lag)
@@ -25,7 +23,7 @@ def generate_lags(df: pd.DataFrame, column_name: str, lags: list) -> pd.DataFram
     return df_copy
 
 def generate_technical_indicators(df: pd.DataFrame, ti_config: DictConfig) -> pd.DataFrame:
-    """Генерирует технические индикаторы на основе конфигурации."""
+    """Generates technical indicators based on the configuration."""
     df_copy = df.copy()
     column_mapping = {col: col.lower() for col in df_copy.columns if col.lower() in ['open', 'high', 'low', 'close', 'volume']}
     df_copy = df_copy.rename(columns=column_mapping)
@@ -61,7 +59,7 @@ def generate_technical_indicators(df: pd.DataFrame, ti_config: DictConfig) -> pd
     return df_copy
 
 def generate_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Гeneрирует календарные признаки из DateTimeIndex."""
+    """Generates calendar features from DateTimeIndex."""
     df_copy = df.copy()
     if not isinstance(df_copy.index, pd.DatetimeIndex):
         log.warning("DataFrame index is not DatetimeIndex. Attempting to convert.")
@@ -71,25 +69,22 @@ def generate_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
             log.error(f"Failed to convert index to DatetimeIndex: {e}. Calendar features might be incorrect or missing.")
             return df_copy
 
-    # Raw features (can be used for direct catboost cat_features or for mean encoding later)
     df_copy['hour_raw'] = df_copy.index.hour
     df_copy['dayofweek_raw'] = df_copy.index.dayofweek
-    
-    # Features as named in notebook that are used for mean encoding or direct use
     df_copy['hour'] = df_copy.index.hour 
     df_copy['dayofweek'] = df_copy.index.dayofweek 
     df_copy['dayofmonth'] = df_copy.index.day
     df_copy['month'] = df_copy.index.month
-    df_copy['year'] = df_copy.index.year # Added from notebook implicitly
+    df_copy['year'] = df_copy.index.year
     log.info("Calendar features generated.")
     return df_copy
 
 def code_mean(df_to_encode: pd.DataFrame, cat_feature_col: str, real_target_col: str, global_mean: float) -> dict:
-    """Рассчитывает средние значения таргета для категориального признака."""
+    """Calculates mean values of the target for the categorical feature."""
     return df_to_encode.groupby(cat_feature_col)[real_target_col].mean().fillna(global_mean).to_dict()
 
 def apply_mean_encoding(df_to_transform: pd.DataFrame, cat_feature_col: str, new_encoded_col_name: str, encoding_map: dict, global_mean: float) -> pd.DataFrame:
-    """Применяет mean encoding к датафрейму используя предоставленную карту."""
+    """Applies mean encoding to the dataframe using the provided map."""
     df_copy = df_to_transform.copy()
     df_copy[new_encoded_col_name] = df_copy[cat_feature_col].map(encoding_map).fillna(global_mean)
     return df_copy
@@ -239,7 +234,7 @@ def main(cfg: DictConfig) -> None:
          log.warning(f"Not enough temp_df data ({len(X_temp)}) to split to val/test. Assigning all to validation.")
          X_val, y_val = X_temp, y_temp
          X_test, y_test = pd.DataFrame(columns=X_temp.columns), pd.Series(dtype=y_temp.dtype, name=y_temp.name)
-    else: # No test set needed or not enough data for it
+    else:
         X_val, y_val = X_temp, y_temp
         X_test, y_test = pd.DataFrame(columns=X_temp.columns), pd.Series(dtype=y_temp.dtype, name=y_temp.name)
     log.info(f"Data split: Train ({len(X_train)}), Validation ({len(X_val)}), Test ({len(X_test)})")
@@ -259,7 +254,7 @@ def main(cfg: DictConfig) -> None:
         
         if feature_to_encode_on not in X_train.columns:
             log.warning(f"Feature '{feature_to_encode_on}' for mean encoding not found in X_train. Skipping.")
-            raw_version = f"{feature_to_encode_on}_raw" # Check if raw version should be added as categorical
+            raw_version = f"{feature_to_encode_on}_raw"
             if raw_version in X_train.columns and raw_version not in categorical_features_for_model:
                 categorical_features_for_model.append(raw_version)
             continue
@@ -284,7 +279,7 @@ def main(cfg: DictConfig) -> None:
         base_cal_feat = raw_cal_feat.replace('_raw','')
         is_base_mean_encoded = (base_cal_feat in dp_cfg.features_for_mean_encoding and 
                                 not (base_cal_feat == 'hour' and not dp_cfg.use_mean_encoding_for_hour))
-        if not is_base_mean_encoded: # If base was not mean encoded, use the _raw as categorical
+        if not is_base_mean_encoded:
             if raw_cal_feat in X_train.columns and raw_cal_feat not in categorical_features_for_model:
                 categorical_features_for_model.append(raw_cal_feat)
                 log.info(f"Added '{raw_cal_feat}' to categorical features as base '{base_cal_feat}' was not mean encoded.")
@@ -321,11 +316,10 @@ def main(cfg: DictConfig) -> None:
     if not X_test.empty:
         X_test = X_test.drop(columns=[col for col in cols_to_drop_runtime if col in X_test.columns], errors='ignore')
     
-    final_train_cols = X_train.columns.tolist() # Ensure consistent column order and presence
+    final_train_cols = X_train.columns.tolist()
     X_val = X_val.reindex(columns=final_train_cols)
     if not X_test.empty: X_test = X_test.reindex(columns=final_train_cols)
     
-    # Final NaN fill after all ops (e.g. from reindex or residual from TIs)
     X_train = X_train.ffill().bfill().fillna(0)
     X_val = X_val.ffill().bfill().fillna(0)
     if not X_test.empty: X_test = X_test.ffill().bfill().fillna(0)
@@ -346,7 +340,7 @@ def main(cfg: DictConfig) -> None:
         if df_to_save.empty and is_test_artifact_type: 
             log.info(f"Test artifact {target_asset_ticker}_{base_artifact_name}_{artifact_name_suffix} is empty. Creating empty parquet.")
             if df_to_save.columns.empty and not df_to_save.index.empty: 
-                df_to_save = pd.DataFrame(index=df_to_save.index, columns=['data']) # Preserve index if any
+                df_to_save = pd.DataFrame(index=df_to_save.index, columns=['data'])
             elif df_to_save.columns.empty and df_to_save.index.empty:
                  df_to_save = pd.DataFrame(columns=['data']) 
 
@@ -370,7 +364,7 @@ def main(cfg: DictConfig) -> None:
     save_and_upload_df(X_val, "features", "validation_data")
     save_and_upload_df(y_val, "target", "validation_data")
     
-    y_pred_naive_test_set = pd.Series(dtype=float, name='y_pred_naive_source') # Ensure name for saving
+    y_pred_naive_test_set = pd.Series(dtype=float, name='y_pred_naive_source')
     if 'y_pred_naive_source' in X_full_features.columns and not y_test.empty: 
         y_pred_naive_test_set = X_full_features.loc[y_test.index, 'y_pred_naive_source']
     elif not y_test.empty: 

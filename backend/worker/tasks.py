@@ -2,13 +2,11 @@ import time
 from celery import current_task
 from celery.utils.log import get_task_logger
 import random
-import subprocess # For running ClearML pipeline scripts
+import subprocess
 import os
-import re # For extracting ClearML Task ID
+import re
 
 from backend.worker.celery_app import celery_app
-# from backend.app.core.config import settings # Если нужно для доступа к API ключам ClearML и т.д.
-# (пока не требуется, так как скрипты пайплайна должны сами использовать ClearML SDK)
 
 logger = get_task_logger(__name__)
 
@@ -28,46 +26,21 @@ def example_task(self,param1, param2):
 @celery_app.task(bind=True)
 def run_backtest_task(self, portfolio_id: str, analysis_params: dict):
     logger.info(f"Запуск задачи анализа портфеля (backtest) для portfolio_id: {portfolio_id} с параметрами: {analysis_params}")
-    total_duration_seconds = analysis_params.get("simulation_duration_seconds", 30)
-    num_steps = analysis_params.get("simulation_steps", 15)
+    
+    total_duration_seconds = fetch_simulation_duration(analysis_params)
+    num_steps = fetch_simulation_steps(analysis_params)
     current_step = 0
     start_time = time.time()
 
-    # Имитация выполнения длительной задачи
     for i in range(num_steps):
-        time.sleep(total_duration_seconds / num_steps)
+        time.sleep(fetch_step_duration(total_duration_seconds, num_steps))
         current_step = i + 1
-        progress = (current_step / num_steps) * 100
-        elapsed_time = time.time() - start_time
-        # Обновляем состояние задачи с метаданными
-        self.update_state(state='PROGRESS',
-                          meta={'current_step': current_step, 
-                                'total_steps': num_steps, 
-                                'progress': round(progress, 2),
-                                'elapsed_time': round(elapsed_time, 2),
-                                'status_message': f'Обработка данных {current_step} из {num_steps}'})
-        logger.info(f"Backtest для {portfolio_id}: Шаг {current_step}/{num_steps}, Прогресс: {progress:.2f}%")
+        progress_data = calculate_progress(current_step, num_steps, start_time)
+        self.update_state(state='PROGRESS', meta=progress_data)
+        logger.info(f"Backtest для {portfolio_id}: Шаг {current_step}/{num_steps}, Прогресс: {progress_data['progress']}%")
 
-    # Имитация результатов
-    simulated_results = {
-        "portfolio_id": portfolio_id,
-        "start_date": "2023-01-01",
-        "end_date": "2023-12-31",
-        "initial_balance": 100000,
-        "final_balance": random.uniform(90000, 150000),
-        "total_return_pct": random.uniform(-10, 50),
-        "sharpe_ratio": random.uniform(0.5, 2.5),
-        "max_drawdown_pct": random.uniform(5, 25),
-        "cagr": random.uniform(1, 20), # Compound Annual Growth Rate
-        "volatility": random.uniform(10, 30), # Annualized Volatility
-        "summary_message": "Симуляция бэктеста завершена.",
-        "time_series_data": [
-            {"date": "2023-01-01", "value": 100000, "benchmark": 100000},
-            {"date": "2023-06-15", "value": random.uniform(105000, 125000), "benchmark": random.uniform(102000, 115000)},
-            {"date": "2023-12-31", "value": random.uniform(110000, 140000), "benchmark": random.uniform(105000, 120000)}
-        ]
-    }
-    logger.info(f"Бэктест для {portfolio_id} завершен. Результаты: {simulated_results}")
+    simulated_results = generate_backtest_results(portfolio_id, analysis_params)
+    logger.info(f"Бэктест для {portfolio_id} завершен.")
     return simulated_results
 
 @celery_app.task(bind=True)
@@ -112,91 +85,55 @@ def analyze_asset_news_task(self, asset_ticker: str, analysis_params: dict = Non
         "summary": f"Анализ {num_articles} новостей для {asset_ticker} показал в целом {sentiment_label.lower()} настрой."
     }
     logger.info(f"Анализ новостей для {asset_ticker} завершен. Результаты: {results}")
-    # Здесь должна быть логика сохранения в NewsAnalysisResult, если это необходимо делать из задачи
-    # Однако, по ТЗ, сохранение происходит в эндпоинте после успешного завершения задачи
     return results
 
 @celery_app.task(bind=True)
 def news_chat_task(self, asset_ticker: str, user_query: str, chat_history: list = None):
     logger.info(f"Запуск задачи чата по новостям для {asset_ticker} с запросом: '{user_query}'")
-    time.sleep(random.uniform(2, 5)) # Имитация обработки запроса LLM
     
-    # Имитация ответа
-    response_text = f"Отвечая на ваш вопрос '{user_query}' по поводу {asset_ticker}, могу сказать, что последние новости указывают на стабильный рост, но есть опасения по поводу регуляции."
-    if "цена" in user_query.lower():
-        response_text += " Прогноз цены дать не могу, но следите за отчетами."
+    response_text = generate_news_response(asset_ticker, user_query)
+    sources_consulted = fetch_sources_for_response(asset_ticker)
     
     results = {
         "asset_ticker": asset_ticker,
         "user_query": user_query,
         "response": response_text,
-        "sources_consulted": ["Фиктивная новость 1", "Аналитический отчет X"]
+        "sources_consulted": sources_consulted
     }
-    self.update_state(state='SUCCESS', meta=results) # Можно сразу SUCCESS, если задача короткая
-    logger.info(f"Чат по новостям для {asset_ticker} завершен. Ответ: '{response_text}'")
+    self.update_state(state='SUCCESS', meta=results)
+    logger.info(f"Чат по новостям для {asset_ticker} завершен.")
     return results
 
 @celery_app.task(bind=True)
 def run_hypothetical_backtest_task(self, simulation_params: dict):
-    logger.info(f"Запуск задачи симуляции гипотетического портфеля с параметрами: {simulation_params}")
-    # Логика аналогична run_backtest_task, но с другими входными параметрами
-    # Например, simulation_params может содержать список активов, их веса, период и т.д.
-    total_duration_seconds = simulation_params.get("simulation_duration_seconds", 20)
-    num_steps = simulation_params.get("simulation_steps", 10)
+    logger.info(f"Запуск задачи гипотетического портфеля с параметрами: {simulation_params}")
+    
+    total_duration_seconds = fetch_simulation_duration(simulation_params)
+    num_steps = fetch_simulation_steps(simulation_params)
 
     for i in range(num_steps):
         time.sleep(total_duration_seconds / num_steps)
-        progress = ((i + 1) / num_steps) * 100
-        self.update_state(state='PROGRESS',
-                          meta={'current_step': i + 1, 
-                                'total_steps': num_steps, 
-                                'progress': round(progress, 2),
-                                'status_message': f'Симуляция шага {i+1}/{num_steps}'})
+        progress_data = calculate_progress(i, num_steps)
+        self.update_state(state='PROGRESS', meta=progress_data)
         logger.info(f"Симуляция гипотетического портфеля: Шаг {i+1}/{num_steps}")
 
-    simulated_results = {
-        "simulation_id": f"sim_{random.randint(1000,9999)}",
-        "parameters": simulation_params,
-        "results": {
-            "final_balance": random.uniform(8000, 15000),
-            "sharpe_ratio": random.uniform(0.3, 2.0),
-            "max_drawdown": random.uniform(0.05, 0.30)
-        }
-    }
-    logger.info(f"Симуляция гипотетического портфеля завершена: {simulated_results}")
+    simulated_results = generate_simulated_results(simulation_params)
+    logger.info(f"Симуляция гипотетического портфеля завершена.")
     return simulated_results
 
 @celery_app.task(bind=True)
 def generate_rebalancing_recommendation_task(self, portfolio_id: str, rebalancing_strategy: str = "default"):
     logger.info(f"Запуск задачи генерации рекомендаций по ребалансировке для портфеля {portfolio_id}, стратегия: {rebalancing_strategy}")
-    # Имитация сложного анализа и работы DRL/оптимизационной модели
-    num_steps = 5
+    
+    num_steps = fetch_num_steps_for_rebalancing()
     for i in range(num_steps):
-        time.sleep(random.uniform(1,3))
-        progress = ((i + 1) / num_steps) * 100
-        self.update_state(state='PROGRESS',
-                          meta={'current_step': i + 1, 
-                                'total_steps': num_steps, 
-                                'progress': round(progress, 2),
-                                'status_message': f'Анализ рыночных данных, шаг {i+1}/{num_steps}'})
+        time.sleep(fetch_step_duration())
+        progress_data = calculate_progress(i, num_steps)
+        self.update_state(state='PROGRESS', meta=progress_data)
         logger.info(f"Генерация рекомендаций для {portfolio_id}: шаг {i+1}/{num_steps}")
     
-    # Имитация рекомендаций
-    recommendations = {
-        "portfolio_id": portfolio_id,
-        "strategy_used": rebalancing_strategy,
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "current_allocations": {"BTCUSDT": 0.4, "ETHUSDT": 0.3, "ADAUSDT": 0.3}, # Пример
-        "recommended_allocations": {"BTCUSDT": 0.5, "ETHUSDT": 0.25, "SOLUSDT": 0.25}, # Пример
-        "trades_suggested": [
-            {"action": "SELL", "ticker": "ADAUSDT", "percentage": 0.3},
-            {"action": "BUY", "ticker": "BTCUSDT", "percentage": 0.1},
-            {"action": "BUY", "ticker": "SOLUSDT", "percentage": 0.25},
-            {"action": "ADJUST", "ticker": "ETHUSDT", "from_percentage": 0.3, "to_percentage": 0.25}
-        ],
-        "rationale": "Рекомендации основаны на текущих трендах и прогнозе волатильности. SOLUSDT добавлен для диверсификации."
-    }
-    logger.info(f"Рекомендации для {portfolio_id} сгенерированы: {recommendations}")
+    recommendations = fetch_rebalancing_recommendations(portfolio_id, rebalancing_strategy)
+    logger.info(f"Рекомендации для {portfolio_id} сгенерированы.")
     return recommendations
 
 
@@ -208,13 +145,8 @@ def run_clearml_pipeline_task(self, pipeline_script_path: str, pipeline_args: li
     if pipeline_args is None:
         pipeline_args = []
 
-    # Определяем корневую директорию проекта (на один уровень выше директории backend)
-    # Это важно, т.к. скрипты пайплайнов могут использовать относительные пути к конфигам Hydra
+
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")) 
-    # __file__ -> backend/worker/tasks.py
-    # os.path.dirname(__file__) -> backend/worker
-    # ".." -> backend
-    # ".." -> project_root
 
     command = ["python", pipeline_script_path] + pipeline_args
 
@@ -228,13 +160,12 @@ def run_clearml_pipeline_task(self, pipeline_script_path: str, pipeline_args: li
 
     try:
         self.update_state(state='PROGRESS', meta={'status_message': f'Запуск скрипта {pipeline_script_path}', 'command': ' '.join(command)})
-        # Запускаем скрипт пайплайна из корневой директории проекта
         process = subprocess.run(
             command, 
             capture_output=True, 
             text=True, 
-            cwd=project_root, # Устанавливаем рабочую директорию
-            check=False # Не выбрасывать исключение при non-zero exit code, обработаем сами
+            cwd=project_root,
+            check=False
         )
 
         pipeline_stdout = process.stdout
@@ -242,7 +173,6 @@ def run_clearml_pipeline_task(self, pipeline_script_path: str, pipeline_args: li
 
         if process.returncode == 0:
             logger.info(f"Скрипт пайплайна '{pipeline_script_path}' выполнен успешно (код возврата 0).")
-            # Ищем ID задачи ClearML в stdout
             match = re.search(r"CLEARML_PIPELINE_TASK_ID:([a-zA-Z0-9]+)", pipeline_stdout)
             if match:
                 clearml_pipeline_id = match.group(1)
@@ -250,8 +180,8 @@ def run_clearml_pipeline_task(self, pipeline_script_path: str, pipeline_args: li
                 self.update_state(state='SUCCESS', 
                                   meta={'status_message': 'ClearML пайплайн успешно запущен.', 
                                         'clearml_pipeline_id': clearml_pipeline_id,
-                                        'stdout': pipeline_stdout[-1000:], # Последние 1000 символов stdout
-                                        'stderr': pipeline_stderr[-1000:]  # Последние 1000 символов stderr
+                                        'stdout': pipeline_stdout[-1000:],
+                                        'stderr': pipeline_stderr[-1000:]
                                        })
             else:
                 error_message = "CLEARML_PIPELINE_TASK_ID не найден в выводе скрипта."
@@ -273,7 +203,7 @@ def run_clearml_pipeline_task(self, pipeline_script_path: str, pipeline_args: li
     if error_message:
         self.update_state(state='FAILURE', 
                           meta={'status_message': error_message, 
-                                'clearml_pipeline_id': clearml_pipeline_id, # может быть None
+                                'clearml_pipeline_id': clearml_pipeline_id,
                                 'stdout': pipeline_stdout[-1000:] if pipeline_stdout else "",
                                 'stderr': pipeline_stderr[-1000:] if pipeline_stderr else ""
                                })

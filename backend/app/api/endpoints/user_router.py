@@ -29,8 +29,7 @@ async def read_user_by_id(
     (Example of a protected endpoint to get other user's data,
      though typically you might restrict this further based on roles/permissions)
     """
-    # Example restriction: only superusers can fetch other users by ID,
-    # or users can fetch their own data (which /me already covers more directly)
+
     if current_user.id != user_id and not getattr(current_user, 'is_superuser', False):
         raise HTTPException(status_code=403, detail="Not enough permissions to access this user's data")
 

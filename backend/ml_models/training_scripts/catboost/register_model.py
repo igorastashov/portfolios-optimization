@@ -7,12 +7,11 @@ from omegaconf import DictConfig, OmegaConf
 import logging
 import pandas as pd
 
-# Настройка логирования
 log = logging.getLogger(__name__)
 
 
 def load_evaluation_metrics(eval_task_id: str, artifact_name: str) -> dict:
-    """Загружает метрики оценки из JSON артефакта задачи ClearML."""
+    """Loads evaluation metrics from a JSON artifact of a ClearML task."""
     try:
         artifact_obj = Artifact.get(task_id=eval_task_id, name=artifact_name)
         if not artifact_obj:
@@ -32,19 +31,18 @@ def load_evaluation_metrics(eval_task_id: str, artifact_name: str) -> dict:
 
 
 def get_output_model_object(train_task_id: str, model_clearml_name: str, project_name: str) -> Model | None:
-    """Получает объект OutputModel из задачи обучения по его имени в ClearML."""
+    """Gets the OutputModel object from the training task by its name in ClearML."""
     try:
         models = Model.query_models(
             task_ids=[train_task_id], 
             model_name=model_clearml_name, 
             project_name=project_name
-            # query_models returns sorted by creation date (newest first)
         )
         if not models:
             log.error(f"OutputModel '{model_clearml_name}' not found for task {train_task_id} in project {project_name}.")
             return None
         
-        output_model = models[0] # Takes the newest version
+        output_model = models[0]
         log.info(f"Found OutputModel: ID {output_model.id}, name '{output_model.name}'")
         return output_model
     except Exception as e:
@@ -63,7 +61,6 @@ def main(cfg: DictConfig) -> None:
     train_task_id = args.train_task_id
     evaluation_task_id = args.evaluation_task_id
 
-    # Используем register_model из конфига для task_name_prefix
     task_name_parametrized = f"{cfg.register_model.task_name_prefix}_{target_asset_ticker}"
     task = Task.init(
         project_name=cfg.project_name,
@@ -78,18 +75,17 @@ def main(cfg: DictConfig) -> None:
     task.connect(effective_config, name='Effective_Hydra_Plus_Args_Configuration')
 
     log.info(f"Starting model registration for {target_asset_ticker}...")
-    reg_cfg = cfg.register_model # Alias для register_model config
-    tm_cfg = cfg.train_model # Alias для train_model config (для model_registry_name_prefix)
+    reg_cfg = cfg.register_model
+    tm_cfg = cfg.train_model
 
     log.info("Loading evaluation metrics...")
-    metrics_artifact_name = f"{target_asset_ticker}_evaluation_metrics" # Как сохранено в evaluate_model.py
+    metrics_artifact_name = f"{target_asset_ticker}_evaluation_metrics"
     metrics = load_evaluation_metrics(evaluation_task_id, metrics_artifact_name)
 
     if not metrics:
         log.error("Evaluation metrics not loaded. Model registration cannot proceed."); task.close(); return
 
     log.info("Getting OutputModel from training task...")
-    # Имя OutputModel, как оно было создано в train_model.py
     output_model_name_from_training = f"{tm_cfg.model_registry_name_prefix}_{target_asset_ticker}"
     clearml_project_name = cfg.project_name 
     
@@ -132,14 +128,13 @@ def main(cfg: DictConfig) -> None:
         log.info(f"Publishing model ID {model_to_register.id} ({model_to_register.name}) in ClearML...")
         try:
             model_to_register.publish()
-            # Дополнительно можно обновить теги или метаданные опубликованной модели
             current_tags = model_to_register.tags or []
             new_tags = list(set(current_tags + ["registered", reg_cfg.get("default_stage", "Production")]))
             model_to_register.set_tags(new_tags)
             model_to_register.set_metadata_item(key="registration_evaluation_metrics", value=json.dumps(metrics))
             model_to_register.set_metadata_item(key="registration_decision_metric", value=f"{metric_key}: {metrics.get(metric_key)}")
             model_to_register.set_metadata_item(key="registration_decision_threshold", value=f"{operator} {threshold_value}")
-            model_to_register.update(suppress_warnings=True) # Сохранить изменения тегов/метаданных
+            model_to_register.update(suppress_warnings=True)
 
             log.info(f"Model ID {model_to_register.id} ({model_to_register.name}) published and updated.")
             task.set_parameter("registered_published_model_id", model_to_register.id)
@@ -154,6 +149,4 @@ def main(cfg: DictConfig) -> None:
     log.info(f"Registration task for {target_asset_ticker} completed.")
 
 if __name__ == '__main__':
-    # Пример вызова:
-    # python register_model.py --target_asset_ticker=BTCUSDT --train_task_id=TRAIN_ID --evaluation_task_id=EVAL_ID
     main() 

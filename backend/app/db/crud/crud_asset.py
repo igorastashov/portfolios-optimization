@@ -30,9 +30,7 @@ def create_asset(db: Session, asset: AssetCreate) -> Asset:
     return db_asset
 
 def update_asset(db: Session, asset_id: int, asset_in: AssetUpdate) -> Optional[Asset]:
-    """Update an existing asset's information.
-    The 'updated_at' field is automatically handled by SQLAlchemy due to 'onupdate=datetime.utcnow' in the model.
-    """
+    """Update an existing asset's information."""
     db_asset = get_asset(db, asset_id=asset_id)
     if not db_asset:
         return None
@@ -41,7 +39,7 @@ def update_asset(db: Session, asset_id: int, asset_in: AssetUpdate) -> Optional[
     for field, value in update_data.items():
         setattr(db_asset, field, value)
     
-    db.add(db_asset) # Not strictly necessary if only updating existing fields of a tracked object
+    db.add(db_asset)
     db.commit()
     db.refresh(db_asset)
     return db_asset
@@ -53,7 +51,4 @@ def delete_asset(db: Session, asset_id: int) -> Optional[Asset]:
         return None
     db.delete(db_asset)
     db.commit()
-    # The db_asset object is no longer active in the session after deletion and commit.
-    # Returning it might lead to issues if its attributes are accessed later.
-    # Consider returning None or a confirmation message instead.
-    return db_asset # For now, returning the (detached) object for consistency with other CRUDs. 
+    return db_asset 

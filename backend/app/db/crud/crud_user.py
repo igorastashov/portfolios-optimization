@@ -47,14 +47,14 @@ def update_user(db: Session, user_id: int, user_update: UserUpdate) -> Optional[
         hashed_password = get_password_hash(update_data["password"])
         update_data["hashed_password"] = hashed_password
         del update_data["password"]
-    else: # Ensure password field is removed if not provided or empty to avoid setting it to None
+    else:
         if "password" in update_data: 
             del update_data["password"]
 
     for field, value in update_data.items():
         setattr(db_user, field, value)
     
-    db_user.updated_at = datetime.utcnow() # Explicitly update the updated_at timestamp
+    db_user.updated_at = datetime.utcnow()
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
@@ -67,18 +67,14 @@ def delete_user(db: Session, user_id: int) -> Optional[User]:
         return None
     db.delete(db_user)
     db.commit()
-    # db_user object is no longer valid after delete and commit,
-    # and cannot be refreshed. Return None or a confirmation.
-    # For consistency with delete operations, often None is returned or the object before deletion.
-    # However, some APIs return the deleted object (detached from session). For now, returning it as is.
-    return db_user # Note: object state after commit for delete can be tricky.
+    return db_user 
 
 def update_last_login(db: Session, user_id: int) -> Optional[User]:
     """Update the last_login timestamp for a user."""
     db_user = get_user(db, user_id)
     if db_user:
         db_user.last_login = datetime.utcnow()
-        db.add(db_user) # Not strictly necessary if only updating existing fields of a tracked object
+        db.add(db_user)
         db.commit()
         db.refresh(db_user)
     return db_user 

@@ -1,4 +1,3 @@
-# Placeholder for DRL Model Evaluation Script
 import argparse
 import pandas as pd
 import numpy as np
@@ -10,7 +9,6 @@ import os
 import json
 import matplotlib.pyplot as plt
 
-# DRL specific imports for evaluation
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 
@@ -26,9 +24,7 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
-# Function to load data from ClearML task artifact
 def load_drl_data_from_task(task_id: str, artifact_name: str) -> pd.DataFrame:
-    """Загружает DataFrame из Parquet артефакта DRL данных задачи ClearML."""
     try:
         artifact = Artifact.get(task_id=task_id, name=artifact_name)
         if not artifact:
@@ -47,7 +43,6 @@ def load_drl_data_from_task(task_id: str, artifact_name: str) -> pd.DataFrame:
         log.error(f"Error loading DRL artifact '{artifact_name}' from task {task_id}: {e}", exc_info=True)
         return pd.DataFrame()
 
-# Function to load DRL model (e.g., SB3 model)
 def load_drl_model_from_clearml_task(train_task_id: str, model_clearml_name: str, project_name: str, agent_name_from_cfg: str = "PPO"):
     """Загружает обученную DRL модель (OutputModel) из задачи обучения ClearML."""
     try:
@@ -66,11 +61,10 @@ def load_drl_model_from_clearml_task(train_task_id: str, model_clearml_name: str
             loaded_model = PPO.load(model_local_path)
             log.info(f"PPO model loaded successfully from {model_local_path}.")
             return loaded_model
-        # Add other agent types if needed
-        # elif agent_name_from_cfg.upper() == "A2C":
-        #     from stable_baselines3 import A2C
-        #     loaded_model = A2C.load(model_local_path)
-        #     return loaded_model
+        elif agent_name_from_cfg.upper() == "A2C":
+            from stable_baselines3 import A2C
+            loaded_model = A2C.load(model_local_path)
+            return loaded_model
         else: 
             log.error(f"Unsupported DRL agent type from config: {agent_name_from_cfg}. Cannot load model.")
             return None
@@ -138,7 +132,7 @@ def main(cfg: DictConfig) -> None:
     log.info("Evaluating DRL model on trade data (backtesting)...")
     stock_dimension_eval = len(trade_df.tic.unique())
     tech_indicator_list_eval = list(env_cfg.tech_indicator_list)
-    state_space_eval = 1 + stock_dimension_eval * (2 + len(tech_indicator_list_eval)) # 1 (cash) + stocks (shares) + stocks (price) + stocks * indicators
+    state_space_eval = 1 + stock_dimension_eval * (2 + len(tech_indicator_list_eval))
 
     env_kwargs_eval = {
         "df": trade_df,
@@ -258,6 +252,4 @@ def main(cfg: DictConfig) -> None:
     log.info(f"DRL evaluation task for portfolio {portfolio_id} completed.")
 
 if __name__ == '__main__':
-    # Пример вызова:
-    # python backend/ml_models/training_scripts/drl/evaluate_model_drl.py --portfolio_id=CRYPTO --data_prep_task_id=XYZ --train_task_id=ABC
     main() 

@@ -4,8 +4,6 @@ from pydantic import BaseModel
 from typing import Any
 
 from backend.app.worker.tasks import add_together, example_background_task
-# from backend.app.services.auth_service import get_current_active_user # Для защищенных эндпоинтов
-# from backend.app.schemas.auth_schemas import User # Для защищенных эндпоинтов
 from backend.app.schemas.common_schemas import TaskResponse
 
 router = APIRouter()
@@ -40,7 +38,7 @@ def get_task_status(task_id: str):
     error_msg: str | None = None
 
     if task_result_obj.failed():
-        error_msg = str(result_val) # В случае ошибки, result_val будет исключением
+        error_msg = str(result_val)
         result_val = None
     elif isinstance(result_val, Exception):
         error_msg = str(result_val)
@@ -52,5 +50,3 @@ def get_task_status(task_id: str):
         result=result_val,
         error_message=error_msg
     )
-
-# Сюда можно добавить другие утилитные эндпоинты 

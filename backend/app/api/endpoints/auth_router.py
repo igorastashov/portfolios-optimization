@@ -48,5 +48,3 @@ def login_for_access_token(db: Session = Depends(get_db), form_data: OAuth2Passw
         data={"sub": user.username}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
-
-# TODO: Add more endpoints like get_current_user, password recovery, etc. 

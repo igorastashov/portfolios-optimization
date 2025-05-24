@@ -1,4 +1,3 @@
-# Placeholder for DRL Training Pipeline Orchestrator 
 from clearml import PipelineController, Task
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -7,7 +6,6 @@ import os
 
 log = logging.getLogger(__name__)
 
-# Path to DRL training scripts (relative to project root or agent's working dir)
 SCRIPT_BASE_PATH = "backend/ml_models/training_scripts/drl/"
 
 @hydra.main(config_path="../../configs", config_name="drl_config", version_base=None)
@@ -98,5 +96,4 @@ def main(cfg: DictConfig) -> None:
              current_defining_task.set_parameter("GeneratedPipelineVersion", pipeline_version)
 
 if __name__ == '__main__':
-    # python backend/ml_models/clearml_pipelines/drl_training_pipeline.py pipeline_params.portfolio_id=MY_CRYPTO
     main() 

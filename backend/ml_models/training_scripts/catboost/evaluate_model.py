@@ -1,9 +1,7 @@
-# Placeholder for CatBoost model evaluation script 
-
 import argparse
 import pandas as pd
 import numpy as np
-from catboost import CatBoostRegressor # Pool не нужен для predict, если данные уже подготовлены
+from catboost import CatBoostRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, mean_absolute_percentage_error
 from clearml import Task, Artifact, Model, Logger
 import hydra
@@ -11,9 +9,8 @@ from omegaconf import DictConfig, OmegaConf
 import logging
 import os
 import json
-import matplotlib.pyplot as plt # Для графиков
+import matplotlib.pyplot as plt
 
-# Настройка логирования
 log = logging.getLogger(__name__)
 
 def load_parquet_artifact(data_prep_task_id: str, artifact_name: str) -> pd.DataFrame:
@@ -44,14 +41,13 @@ def load_catboost_model_from_task(train_task_id: str, model_clearml_name: str) -
             project_name=project_name, 
             model_name=model_clearml_name, 
             task_ids=[train_task_id],
-            #max_versions=1, # query_models returns sorted by creation date (newest first)
         )
         
         if not models:
             log.error(f"OutputModel '{model_clearml_name}' not found for task {train_task_id} in project {project_name}.")
             return None
         
-        model_object = models[0] # Takes the newest version by default
+        model_object = models[0]
         log.info(f"Found model '{model_clearml_name}' (ID: {model_object.id}). Downloading...")
         model_local_path = model_object.get_local_copy()
         
@@ -90,9 +86,9 @@ def main(cfg: DictConfig) -> None:
     task.connect(effective_config, name='Effective_Hydra_Plus_Args_Configuration')
 
     log.info(f"Starting model evaluation for {target_asset_ticker}...")
-    dp_cfg = cfg.data_preparation # Для target_col_name
-    tm_cfg = cfg.train_model    # Для model_registry_name_prefix
-    eval_cfg = cfg.evaluate_model # Для параметров оценки
+    dp_cfg = cfg.data_preparation
+    tm_cfg = cfg.train_model
+    eval_cfg = cfg.evaluate_model
 
     log.info("Loading test data...")
     X_test = load_parquet_artifact(data_prep_task_id, "test_data_features")
@@ -103,7 +99,6 @@ def main(cfg: DictConfig) -> None:
         log.error("Failed to load X_test or y_test_df. Aborting task.")
         task.close(); raise ValueError("Failed to load test X or y data.")
     
-    # Извлекаем y_test Series
     target_column_name_in_y_artifacts = dp_cfg.target_col_name
     if target_column_name_in_y_artifacts not in y_test_df.columns:
         log.warning(f"Target column '{target_column_name_in_y_artifacts}' not found in y_test_df. Using first column.")
@@ -117,7 +112,6 @@ def main(cfg: DictConfig) -> None:
         log.info(f"Naive baseline predictions loaded: {y_naive_pred_df.shape}")
 
     log.info("Loading trained CatBoost model...")
-    # Имя модели в реестре ClearML, как было задано в train_model.py
     model_clearml_name = f"{tm_cfg.model_registry_name_prefix}_{target_asset_ticker}" 
     model = load_catboost_model_from_task(train_task_id, model_clearml_name)
 
@@ -128,50 +122,34 @@ def main(cfg: DictConfig) -> None:
     log.info("Evaluating model on test data...")
     y_pred = model.predict(X_test)
 
-    # Расчет метрик
     metrics = {}
-    # Убедимся, что y_test и y_pred это numpy массивы или pandas Series для sklearn метрик
     y_test_np = y_test.squeeze().values if isinstance(y_test, pd.DataFrame) else y_test.values 
-    # y_pred уже должен быть numpy array от model.predict()
-
-    # Проверка на NaN/inf перед расчетом метрик, если необходимо
-    # if np.isnan(y_pred).any() or np.isinf(y_pred).any():
-    #     log.warning("Найдены NaN или Inf в y_pred. MAPE может быть некорректным или вызвать ошибку.")
-        # MAPE чувствителен к нулям в y_test. Добавим epsilon, если это проблема.
-        # y_test_mape = np.where(y_test_np == 0, 1e-6, y_test_np)
-        # mape = mean_absolute_percentage_error(y_test_mape, y_pred)
     
-    # Проверка на случай, если y_test или y_pred пустые после всех преобразований
     if len(y_test_np) == 0 or len(y_pred) == 0 or len(y_test_np) != len(y_pred):
         log.error(f"y_test ({len(y_test_np)}) and y_pred ({len(y_pred)}) sizes mismatch or empty. Cannot calculate metrics.")
     else:
         try:
             metrics["RMSE"] = np.sqrt(mean_squared_error(y_test_np, y_pred))
             metrics["MAE"] = mean_absolute_error(y_test_np, y_pred)
-            # Для MAPE: избегаем деления на ноль, если есть в y_test_np
-            # Также MAPE ожидает, что y_true и y_pred > 0 для стандартной интерпретации.
-            # Если могут быть нули или отрицательные значения, интерпретация MAPE усложняется.
             mask_zero_true = y_test_np != 0
             if np.any(mask_zero_true):
                  metrics["MAPE"] = mean_absolute_percentage_error(y_test_np[mask_zero_true], y_pred[mask_zero_true])
             else:
-                 metrics["MAPE"] = np.nan # или 0, или другое значение, если все y_test_np == 0
-            metrics["R2_score"] = r2_score(y_test_np, y_pred)
+                 metrics["MAPE"] = np.nan
+            metrics["R2_score"] = r2_score(y_test_np, y_pred)   
         except Exception as e_metrics:
             log.error(f"Error calculating main metrics: {e_metrics}", exc_info=True)
 
     log.info(f"Test set metrics for {target_asset_ticker}: {metrics}")
     clearml_logger = task.get_logger()
     for metric_name, value in metrics.items():
-        if pd.notna(value): # Логируем только если значение не NaN
+        if pd.notna(value):
             clearml_logger.report_scalar(title="Test Set Metrics", series=metric_name, value=value, iteration=0)
 
-    # 4. Сравнение с наивной моделью
-    y_naive_final_predictions = None # Для графика
+    y_naive_final_predictions = None
     if eval_cfg.get("compare_with_naive_model", False) and not y_naive_pred_df.empty:
         log.info("Comparing with naive model...")
-        # Наивные предсказания были сохранены в data_preparation.py как 'y_pred_naive_source'
-        naive_pred_col_name = 'y_pred_naive_source' # Как было сохранено
+        naive_pred_col_name = 'y_pred_naive_source'
         if naive_pred_col_name not in y_naive_pred_df.columns:
             log.warning(f"Column '{naive_pred_col_name}' not found in y_naive_pred_df. Columns: {y_naive_pred_df.columns.tolist()}")
         else:
@@ -196,17 +174,15 @@ def main(cfg: DictConfig) -> None:
                     log.error(f"Error calculating naive model metrics: {e_naive_metrics}", exc_info=True)
             else:
                 log.warning(f"y_test ({len(y_test_np)}) and y_naive_pred ({len(y_naive_final_predictions)}) sizes mismatch. Skipping naive comparison.")
-                y_naive_final_predictions = None # Сбрасываем, если размеры не совпали, чтобы не использовать на графике
+                y_naive_final_predictions = None
     elif eval_cfg.get("compare_with_naive_model", False) and y_naive_pred_df.empty:
         log.warning("Compare with naive model enabled, but y_naive_pred_df is empty.")
 
-    # 5. Графики
     if eval_cfg.get("generate_plots", True) and len(y_test_np) > 0:
         log.info("Generating and logging plots...")
         try:
-            plt.figure(figsize=tuple(eval_cfg.get("plot_figsize", [12, 6])) ) # Убедимся что figsize это tuple
+            plt.figure(figsize=tuple(eval_cfg.get("plot_figsize", [12, 6])))
             
-            # Используем индекс из X_test, если он DatetimeIndex, иначе просто последовательность чисел
             plot_x_axis = X_test.index if isinstance(X_test.index, pd.DatetimeIndex) else np.arange(len(y_test_np))
             
             plt.plot(plot_x_axis, y_test_np, label='Actual', color='blue', alpha=0.9, linewidth=1.5)
@@ -238,7 +214,6 @@ def main(cfg: DictConfig) -> None:
         log.warning("Skipping plot generation as y_test_np is empty.")
 
     log.info("Saving evaluation results (metrics)...")
-    # Удаляем NaN значения из словаря metrics перед сохранением в JSON, если есть
     metrics_to_save = {k: (None if pd.isna(v) else v) for k, v in metrics.items()}
     metrics_filename = f"evaluation_metrics_{target_asset_ticker}.json"
     with open(metrics_filename, 'w') as f:
@@ -250,7 +225,4 @@ def main(cfg: DictConfig) -> None:
     log.info(f"Evaluation task for {target_asset_ticker} completed.")
 
 if __name__ == '__main__':
-    # Пример вызова:
-    # python evaluate_model.py --target_asset_ticker=BTCUSDT --data_prep_task_id=PREP_TASK_ID --train_task_id=TRAIN_TASK_ID
-    # Где PREP_TASK_ID и TRAIN_TASK_ID - это ID соответствующих задач ClearML.
     main() 

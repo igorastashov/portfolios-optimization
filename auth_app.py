@@ -1887,7 +1887,6 @@ else:
              st.info("Заполните параметры выше и нажмите 'Запустить моделирование', чтобы увидеть результаты.")
 
 
-    # ... (rest of the elif st.session_state.active_page blocks for other pages) ...
 
     '''
     poetry run streamlit run auth_app.py

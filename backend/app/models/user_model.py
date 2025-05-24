@@ -15,10 +15,6 @@ class User(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_login = Column(DateTime, nullable=True)
 
-    # Relationship to Portfolios: Portfolios owned by this user.
-    # Cascading delete means if a User is deleted, their Portfolios are also deleted.
     portfolios = relationship("Portfolio", back_populates="owner", cascade="all, delete-orphan")
     
-    # Relationship to Transactions: Transactions made by this user.
-    # Cascade delete for transactions is typically handled when the associated Portfolio is deleted.
     transactions = relationship("Transaction", back_populates="owner") 

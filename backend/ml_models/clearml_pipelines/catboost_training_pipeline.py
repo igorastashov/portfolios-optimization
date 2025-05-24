@@ -1,60 +1,18 @@
-# Placeholder for CatBoost training pipeline orchestrator 
-
+from clearml import PipelineController, Task
+import hydra
 from clearml import PipelineController, Task
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
 import os
 
-# Настройка логирования
 log = logging.getLogger(__name__)
-
-# Абсолютный путь к директории со скриптами обучения. 
-# Это необходимо, чтобы ClearML мог найти скрипты при запуске пайплайна.
-# Путь должен быть относительно МЕСТА ЗАПУСКА этого скрипта `catboost_training_pipeline.py`
-# или абсолютным.
-# Если pipeline-скрипт лежит в backend/ml_models/clearml_pipelines,
-# а скрипты шагов в backend/ml_models/training_scripts/catboost,
-# то относительный путь будет ../training_scripts/catboost/
-
-# Более надежный способ - использовать абсолютные пути или пути относительно корня проекта,
-# если скрипт запускается из определенного места.
-# Для примера, предполагаем, что этот скрипт запускается из `backend/ml_models/clearml_pipelines`
-# или что `PYTHONPATH` настроен так, что `ml_models.training_scripts...` доступно.
-
-# Определим путь к скриптам более гибко:
-# Это текущая директория (где лежит этот pipeline-скрипт)
-# PIPELINE_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Директория `ml_models` (на два уровня выше)
-# ML_MODELS_DIR = os.path.dirname(os.path.dirname(PIPELINE_FILE_DIR))
-# Путь к скриптам CatBoost
-# CATBOOST_SCRIPTS_DIR = os.path.join(ML_MODELS_DIR, "training_scripts", "catboost")
-
-# Упрощенный вариант: предполагаем, что скрипты находятся в ../training_scripts/catboost
-# относительно этого файла. ClearML агент должен будет найти их по этому пути.
-# При запуске через `clearml-pipeline execute` или из UI, агент будет использовать этот путь.
-# Важно, чтобы эти пути были корректными в КОНТЕКСТЕ ВЫПОЛНЕНИЯ агента ClearML.
-
-# Самый простой вариант для ClearML - указать путь к скрипту относительно корня репозитория,
-# когда агент клонирует репозиторий. Например, "ml_models/training_scripts/catboost/data_preparation.py".
-# Либо, если запускаем задачу из локального кода, то путь должен быть доступен.
-
-# Давайте использовать пути относительно `backend/` как базовой директории при указании скриптов.
-# То есть, если агент ClearML клонирует репозиторий и `backend` - это поддиректория,
-# то пути будут `ml_models/training_scripts/catboost/data_preparation.py` и т.д.,
-# если рабочая директория агента установлена в `backend`.
-# Или полный путь от корня репозитория: `backend/ml_models/training_scripts/catboost/data_preparation.py`
-
-# Предположим, что ClearML агент будет запускать шаги из корня проекта,
-# и мы указываем полный путь к скриптам от корня.
-# Если проект структурирован так, что `backend` - это папка в корне:
 SCRIPT_BASE_PATH = "backend/ml_models/training_scripts/catboost/"
 
 
 @hydra.main(config_path="../../configs", config_name="catboost_config", version_base=None)
 def main(cfg: DictConfig) -> None:
     log.info("Defining CatBoost training pipeline...")
-    # log.info(f"Hydra Config: {OmegaConf.to_yaml(cfg)}") # Optional: for debugging
 
     pipeline_project = cfg.project_name
     pipeline_name = cfg.pipeline_name
@@ -78,9 +36,6 @@ def main(cfg: DictConfig) -> None:
 
     pipe.connect_configuration(OmegaConf.to_container(cfg, resolve=True), name='Pipeline_Effective_Configuration')
     pipe.set_default_execution_queue(default_queue)
-    # Optionally set a default docker image if all steps use the same and it's not in clearml.conf
-    # default_docker_image = cfg.get("base_docker_image", "python:3.10-slim")
-    # if default_docker_image: pipe.set_default_docker_image(default_docker_image)
 
     for ticker in target_asset_tickers:
         log.info(f"Defining pipeline steps for ticker: {ticker}")
@@ -140,7 +95,7 @@ def main(cfg: DictConfig) -> None:
 
     pipeline_controller_task_id = pipe.get_id()
     log.info(f"ClearML Pipeline Controller Task ID: {pipeline_controller_task_id}")
-    print(f"CLEARML_PIPELINE_TASK_ID:{pipeline_controller_task_id}") # For Celery worker
+    print(f"CLEARML_PIPELINE_TASK_ID:{pipeline_controller_task_id}")
 
     current_defining_task = Task.current_task()
     if current_defining_task:
@@ -151,14 +106,4 @@ def main(cfg: DictConfig) -> None:
              current_defining_task.set_parameter("GeneratedPipelineVersion", pipeline_version)
 
 if __name__ == '__main__':
-    # Для запуска этого скрипта:
-    # 1. Убедитесь, что ClearML сконфигурирован (clearml-init).
-    # 2. Убедитесь, что есть конфигурация `catboost_config.yaml` в `../../configs`.
-    # 3. Запустите: `python backend/ml_models/clearml_pipelines/catboost_training_pipeline.py`
-    #    (путь может зависеть от вашей текущей директории)
-    #
-    # По умолчанию, он только определит пайплайн. 
-    # Чтобы запустить его локально (если агент настроен), установите 
-    # `run_pipeline_locally_after_definition: true` в `catboost_config.yaml` или передайте как параметр Hydra:
-    # `python ... catboost_training_pipeline.py run_pipeline_locally_after_definition=true`
     main() 

@@ -1,4 +1,3 @@
-# Placeholder for DRL Model Registration Script
 import argparse
 import json
 import os
@@ -6,12 +5,11 @@ from clearml import Task, Model, Artifact
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
-import pandas as pd # For pd.notna
+import pandas as pd
 
 log = logging.getLogger(__name__)
 
 def load_drl_evaluation_metrics(eval_task_id: str, artifact_name: str) -> dict:
-    """Загружает метрики оценки DRL из JSON артефакта задачи ClearML."""
     try:
         artifact = Artifact.get(task_id=eval_task_id, name=artifact_name)
         if not artifact:
@@ -30,7 +28,6 @@ def load_drl_evaluation_metrics(eval_task_id: str, artifact_name: str) -> dict:
         return {}
 
 def get_drl_input_model_from_task(train_task_id: str, model_clearml_name: str, project_name: str) -> Model | None:
-    """Получает объект DRL OutputModel из задачи обучения по его имени в ClearML."""
     try:
         log.info(f"Fetching DRL OutputModel '{model_clearml_name}' from training task {train_task_id} in project {project_name}")
         models = Model.query_models(task_ids=[train_task_id], model_name=model_clearml_name, project_name=project_name, max_results=1)
@@ -162,6 +159,4 @@ def main(cfg: DictConfig) -> None:
     log.info(f"DRL model registration task for portfolio {portfolio_id} completed.")
 
 if __name__ == '__main__':
-    # Example:
-    # python backend/ml_models/training_scripts/drl/register_model_drl.py --portfolio_id=CRYPTO_PORTFOLIO --train_task_id=ABC --evaluation_task_id=DEF
     main() 

@@ -2,7 +2,6 @@ from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 from datetime import datetime
 
-# --- User Schemas ---
 class UserBase(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     email: EmailStr
@@ -20,7 +19,7 @@ class UserInDBBase(UserBase):
     last_login: Optional[datetime] = None
 
     class Config:
-        from_attributes = True # for orm_mode in Pydantic v1, now from_attributes
+        from_attributes = True
 
 class User(UserInDBBase):
     pass
@@ -28,7 +27,6 @@ class User(UserInDBBase):
 class UserInDB(UserInDBBase):
     hashed_password: str
 
-# --- Token Schemas ---
 class Token(BaseModel):
     access_token: str
     token_type: str
@@ -36,7 +34,6 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     username: Optional[str] = None
 
-# --- Login Schema ---
 class UserLogin(BaseModel):
     username: str
     password: str 

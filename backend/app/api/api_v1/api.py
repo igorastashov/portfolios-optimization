@@ -20,15 +20,13 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
-# Set all CORS enabled origins
 if settings.BACKEND_CORS_ORIGINS:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[str(origin).strip() for origin in settings.BACKEND_CORS_ORIGINS],
-        # allow_origins=["*"], # Allow all for dev, but be specific in prod
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"], # Added OPTIONS
-        allow_headers=["*"], # Allow all headers
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
     )
 
 api_router = APIRouter()
@@ -45,9 +43,8 @@ api_router.include_router(utils.router, prefix="/utils", tags=["utils"])
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
-# Простой эндпоинт для проверки работы Celery (опционально)
 from backend.worker.tasks import example_task
-from backend.app.schemas import Msg, CeleryTaskResponse # Added CeleryTaskResponse
+from backend.app.schemas import Msg, CeleryTaskResponse
 
 @app.post("/api/v1/test-celery/", response_model=CeleryTaskResponse, tags=["utils"])
 async def test_celery(msg: Msg):
@@ -57,7 +54,6 @@ async def test_celery(msg: Msg):
     task = example_task.delay(param1=msg.msg, param2=5)
     return CeleryTaskResponse(task_id=task.id, message="Example Celery task sent")
 
-# Эндпоинт для получения статуса задачи Celery (опционально)
 from celery.result import AsyncResult
 from pydantic import BaseModel
 from typing import Any
@@ -66,14 +62,14 @@ class TaskStatusResponse(BaseModel):
     task_id: str
     status: str
     result: Any = None
-    progress: Any = None # To hold progress metadata
+    progress: Any = None
 
 @app.get("/api/v1/task-status/{task_id}", response_model=TaskStatusResponse, tags=["utils"])
 async def get_task_status(task_id: str):
     """
     Get the status of a Celery task.
     """
-    task_result = AsyncResult(task_id, app=example_task.app) # Use app from one of your tasks
+    task_result = AsyncResult(task_id, app=example_task.app)
     result = task_result.result
     progress_info = None
 
@@ -81,7 +77,7 @@ async def get_task_status(task_id: str):
         response_status = "Pending"
     elif task_result.state == 'PROGRESS':
         response_status = "In Progress"
-        progress_info = task_result.info # meta from update_state
+        progress_info = task_result.info
     elif task_result.state == 'SUCCESS':
         response_status = "Success"
     elif task_result.state == 'FAILURE':

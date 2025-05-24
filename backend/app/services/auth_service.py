@@ -11,7 +11,7 @@ from backend.app.core.config import settings
 from backend.app.schemas.auth_schemas import TokenData
 from backend.app.db.session import get_db
 from backend.app.db.crud import crud_user
-from backend.app.models.user_model import User as UserModel # Alias to avoid name clash
+from backend.app.models.user_model import User as UserModel
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -19,8 +19,6 @@ ALGORITHM = settings.ALGORITHM
 SECRET_KEY = settings.SECRET_KEY
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 
-# OAuth2PasswordBearer требует указать URL эндпоинта для получения токена
-# Этот URL должен совпадать с тем, что используется в auth_router.py для логина
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login/access-token")
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -70,7 +68,4 @@ async def get_current_user(
 async def get_current_active_user(
     current_user: UserModel = Depends(get_current_user)
 ) -> UserModel:
-    # Здесь можно добавить проверку, активен ли пользователь (is_active)
-    # if not current_user.is_active:
-    #     raise HTTPException(status_code=400, detail="Inactive user")
     return current_user 

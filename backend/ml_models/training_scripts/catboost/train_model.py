@@ -1,5 +1,3 @@
-# Placeholder for CatBoost model training script 
-
 import argparse
 import pandas as pd
 import numpy as np
@@ -11,11 +9,10 @@ import logging
 import os
 import json 
 
-# Настройка логирования
 log = logging.getLogger(__name__)
 
 def load_parquet_artifact(data_prep_task_id: str, artifact_name: str) -> pd.DataFrame:
-    """Загружает DataFrame из Parquet артефакта задачи ClearML."""
+    """Loads a DataFrame from a Parquet artifact of a ClearML task."""
     try:
         artifact = Artifact.get(task_id=data_prep_task_id, name=artifact_name)
         if not artifact:
@@ -32,7 +29,7 @@ def load_parquet_artifact(data_prep_task_id: str, artifact_name: str) -> pd.Data
         return pd.DataFrame()
 
 def load_json_artifact(data_prep_task_id: str, artifact_name: str) -> list | dict:
-    """Загружает JSON из артефакта задачи ClearML."""
+    """Loads JSON from a ClearML task artifact."""
     try:
         artifact = Artifact.get(task_id=data_prep_task_id, name=artifact_name)
         if not artifact:
@@ -97,7 +94,6 @@ def main(cfg: DictConfig) -> None:
         else: log.error("y_train_df has no columns."); task.close(); raise ValueError("y_train_df has no columns.")
             
     y_train = y_train_df[target_column_name_in_y_artifacts]
-    # Ensure consistent target column name for validation set
     val_target_col_name = target_column_name_in_y_artifacts
     if val_target_col_name not in y_val_df.columns:
         log.warning(f"Target column '{val_target_col_name}' not found in y_val_df. Columns: {y_val_df.columns.tolist()}. Using first column.")
@@ -151,7 +147,6 @@ def main(cfg: DictConfig) -> None:
             task.set_parameter(f"best_val_{metric_name_key}", metric_value)
             
     log.info("Saving trained model...")
-    # Use model_registry_name_prefix for the OutputModel name in ClearML
     clearml_model_name = f"{tm_cfg.model_registry_name_prefix}_{target_asset_ticker}"
     model_local_path_cbm = f"{clearml_model_name}.cbm" 
 
@@ -176,28 +171,4 @@ def main(cfg: DictConfig) -> None:
     log.info(f"Training task for {target_asset_ticker} completed.")
 
 if __name__ == '__main__':
-    # Для локального запуска и отладки
-    # Убедитесь, что у вас есть:
-    # 1. Конфигурация catboost_config.yaml в ../../configs
-    # 2. Артефакты от предыдущей задачи (data_preparation) доступны.
-    #    Для локального теста, можно создать dummy артефакты или мокнуть load_data_from_task_artifact.
-    #
-    # Пример вызова (потребует реальный data_prep_task_id):
-    # python train_model.py --target_asset_ticker=BTCUSDT --data_prep_task_id=your_task_id_here
-    #
-    # Или так, если параметры Hydra передаются через CLI (но argparse для task_id и ticker обязателен)
-    # python train_model.py --target_asset_ticker=BTCUSDT --data_prep_task_id=xxx model_params.iterations=100
-    
-    # ClearML PipelineController будет вызывать этот скрипт примерно так:
-    # clearml-task --project PortfolioOptimization/PricePrediction \
-    #              --name train_catboost_model_BTCUSDT \
-    #              --script backend/ml_models/training_scripts/catboost/train_model.py \
-    #              --args target_asset_ticker=BTCUSDT data_prep_task_id=${data_prep_task.id} \
-    #              --docker python:3.10-slim \
-    #              --queue default
-    # Параметр data_prep_task_id=${data_prep_task.id} будет автоматически подставлен ClearML Pipelines
-    # при указании зависимости от предыдущего шага.
-
-    # Этот вызов main() здесь для того, чтобы Hydra отработала при запуске скрипта напрямую.
-    # Если передавать аргументы командной строки, они будут обработаны argparse.
     main() 

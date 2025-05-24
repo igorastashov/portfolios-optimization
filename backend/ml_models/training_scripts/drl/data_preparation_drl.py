@@ -1,4 +1,3 @@
-# Placeholder for DRL Data Preparation Script
 import argparse
 import pandas as pd
 import numpy as np
@@ -7,18 +6,11 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
 import os
-import ta # For Technical Analysis
-from ta.utils import dropna # Utility to remove NaNs created by TA indicators
+import ta
+from ta.utils import dropna 
 
 log = logging.getLogger(__name__)
 
-# (Helper functions for loading data, feature engineering specific to DRL will be added here)
-# For DRL, data typically needs to be in a format that includes multiple tickers 
-# and features for each ticker over time to construct the state space.
-
-# Функция для загрузки данных из ClearML Dataset (пример)
-# В реальном сценарии эта функция должна быть более надежной
-# и соответствовать структуре ваших датасетов
 def load_single_asset_data_from_clearml(asset_ticker: str, cfg_data_source: DictConfig, task_project_name: str) -> pd.DataFrame:
     log.info(f"Attempting to load data for {asset_ticker} from ClearML Dataset...")
     try:
@@ -55,7 +47,6 @@ def load_single_asset_data_from_clearml(asset_ticker: str, cfg_data_source: Dict
             df = pd.read_csv(data_file_path)
         
         if not isinstance(df.index, pd.DatetimeIndex):
-            # Attempt to find and set a datetime index
             potential_date_cols = ['date', 'timestamp', 'Date', 'Timestamp', 'Time', 'datetime', 'Datetime']
             found_date_col = False
             for col_name in df.columns:
@@ -68,7 +59,7 @@ def load_single_asset_data_from_clearml(asset_ticker: str, cfg_data_source: Dict
                         found_date_col = True
                         break
                     except Exception:
-                        pass # Try next potential date column
+                        pass
             if not found_date_col:
                  log.warning(f"Could not auto-set DatetimeIndex for {asset_ticker}. Ensure data has a proper time index.")
         
@@ -97,8 +88,6 @@ def add_technical_indicators_to_multi_asset_df(df: pd.DataFrame, tic_col_name: s
         required_cols_lower = ['open', 'high', 'low', 'close', 'volume']
         for col_lower in required_cols_lower:
             if col_lower not in tic_df_renamed.columns:
-                # If OHLCV are missing, attempt to use 'close' if available, else fill with NaN to be handled later.
-                # This assumes 'close' is the most critical price. For DRL, robust handling is key.
                 if 'close' in tic_df_renamed.columns:
                     tic_df_renamed[col_lower] = tic_df_renamed['close']
                     log.warning(f"Column '{col_lower}' missing for {tic_value}, filled with 'close' values.")
@@ -106,20 +95,16 @@ def add_technical_indicators_to_multi_asset_df(df: pd.DataFrame, tic_col_name: s
                     tic_df_renamed[col_lower] = np.nan 
                     log.warning(f"Column '{col_lower}' and 'close' missing for {tic_value}. '{col_lower}' filled with NaN.")
         
-        # Drop rows where essential price data (after potential filling) is still NaN before TI calculation
-        # TIs usually need at least 'close'. Depending on indicators, 'high', 'low', 'open' are also needed.
         tic_df_processed = dropna(tic_df_renamed, subset=['close']) 
 
         if tic_df_processed.empty:
             log.warning(f"DataFrame for {tic_value} is empty after dropna on 'close' before TI calculation. Appending original (unmodified) data for this ticker.")
-            all_tics_data.append(tic_df) # Append original segment for this tic if processing fails
+            all_tics_data.append(tic_df)
             continue
         
-        # RSI
         if ti_config.rsi.enabled and 'close' in tic_df_processed.columns and not tic_df_processed['close'].isnull().all():
             try: tic_df_processed['rsi'] = ta.momentum.RSIIndicator(close=tic_df_processed["close"], window=ti_config.rsi.window).rsi()
             except Exception as e_ti: log.error(f"Error RSI for {tic_value}: {e_ti}")
-        # MACD
         if ti_config.macd.enabled and 'close' in tic_df_processed.columns and not tic_df_processed['close'].isnull().all():
             try: 
                 macd_indicator = ta.trend.MACD(close=tic_df_processed["close"], 
@@ -129,7 +114,6 @@ def add_technical_indicators_to_multi_asset_df(df: pd.DataFrame, tic_col_name: s
                 tic_df_processed['macd'] = macd_indicator.macd()
                 tic_df_processed['macd_signal'] = macd_indicator.macd_signal()
             except Exception as e_ti: log.error(f"Error MACD for {tic_value}: {e_ti}")
-        # Bollinger Bands
         if ti_config.bollinger.enabled and 'close' in tic_df_processed.columns and not tic_df_processed['close'].isnull().all():
             try:
                 bollinger_indicator = ta.volatility.BollingerBands(close=tic_df_processed["close"], 
@@ -144,14 +128,11 @@ def add_technical_indicators_to_multi_asset_df(df: pd.DataFrame, tic_col_name: s
              try: tic_df_processed['change_pct'] = tic_df_processed['close'].pct_change()
              except Exception as e_chg: log.error(f"Error calculating 'change_pct' for {tic_value}: {e_chg}")
 
-        # Preserve original columns that were not lowercased
         original_cols_to_restore = {v: k for k, v in column_mapping.items() if k != v} 
         tic_df_restored = tic_df_processed.rename(columns=original_cols_to_restore)
 
-        # Merge TI columns back to original tic_df to keep all original columns
-        # and ensure only newly added TI columns are considered for ffill/bfill
         ti_cols_added = [col for col in tic_df_restored.columns if col not in tic_df.columns and col in ['rsi', 'macd', 'macd_signal', 'bb_mavg', 'bb_hband', 'bb_lband', 'change_pct']]
-        final_tic_df = tic_df.copy() # Start with the original data for this tic
+        final_tic_df = tic_df.copy()
         for ti_col in ti_cols_added:
             if ti_col in tic_df_restored:
                 final_tic_df[ti_col] = tic_df_restored[ti_col]
@@ -184,7 +165,7 @@ def main(cfg: DictConfig) -> None:
         output_uri=True
     )
     task.connect(OmegaConf.to_container(cfg, resolve=True), name='Hydra_Configuration')
-    task.connect_configuration(vars(args), name='Argparse_Configuration') # Log argparse arguments
+    task.connect_configuration(vars(args), name='Argparse_Configuration')
 
     log.info(f"Starting DRL data preparation for portfolio: {portfolio_id}...")
     dp_cfg = cfg.data_preparation
@@ -196,15 +177,13 @@ def main(cfg: DictConfig) -> None:
         task.close(); raise ValueError("asset_tickers list is empty in drl_config.")
 
     all_asset_data_list = []
-    current_task_project_name = task.get_project_name() # Get project name from current task for dataset loading
+    current_task_project_name = task.get_project_name()
 
     for ticker in asset_tickers_to_load:
         df_asset = load_single_asset_data_from_clearml(ticker, dp_cfg.input_market_data, current_task_project_name)
         if df_asset.empty:
             log.warning(f"Data for ticker {ticker} not loaded from ClearML. This asset will be excluded.")
-            # Optionally, one could implement a fallback to dummy data here if strictly needed for dev/testing,
-            # but for production, it's better to fail or exclude if data is missing.
-            continue # Skip this asset if data is missing
+            continue
         
         df_asset['tic'] = ticker 
         all_asset_data_list.append(df_asset)
@@ -221,9 +200,6 @@ def main(cfg: DictConfig) -> None:
             log.warning("Null values in index after to_datetime conversion. Dropping rows with NaT index.")
             processed_df = processed_df[processed_df.index.notnull()]
     
-    # Handle potential duplicate indices from concat, common if assets have overlapping time periods but slightly different times
-    # For DRL, a consistent timeline across assets is important. Resampling or careful selection might be needed.
-    # Here, we just keep the first occurrence if exact duplicates exist.
     if processed_df.index.duplicated().any():
         log.warning(f"Duplicate indices found ({processed_df.index.duplicated().sum()} instances). Keeping first.")
         processed_df = processed_df[~processed_df.index.duplicated(keep='first')]
@@ -232,11 +208,8 @@ def main(cfg: DictConfig) -> None:
     log.info(f"Data for {len(all_asset_data_list)} assets combined. Total shape: {processed_df.shape}")
 
     log.info("Adding technical indicators for DRL...")
-    # Ensure 'tic' column exists before passing to TI function
     if 'tic' not in processed_df.columns:
         log.error("'tic' column is missing in the combined dataframe before TI calculation.")
-        # This should not happen if load_single_asset_data_from_clearml adds it.
-        # Attempt to infer it if only one asset was loaded, otherwise error out.
         if len(asset_tickers_to_load) == 1 and not processed_df.empty:
             processed_df['tic'] = asset_tickers_to_load[0]
             log.info(f"Added 'tic' column with value '{asset_tickers_to_load[0]}' as only one asset was loaded.")
@@ -245,14 +218,12 @@ def main(cfg: DictConfig) -> None:
 
     processed_df = add_technical_indicators_to_multi_asset_df(processed_df, tic_col_name='tic', ti_config=cfg.drl_specific_features.technical_indicators)
     
-    # FinRL format: sort by date, then by tic. Reset index to have 'date' as a column.
     if isinstance(processed_df.index, pd.DatetimeIndex) and processed_df.index.name == 'date':
-         processed_df = processed_df.reset_index() # Ensure 'date' is a column
+         processed_df = processed_df.reset_index()
     elif 'date' not in processed_df.columns and 'index' in processed_df.columns and pd.api.types.is_datetime64_any_dtype(processed_df['index']):
         processed_df = processed_df.rename(columns={'index': 'date'})
     elif 'date' not in processed_df.columns:
         log.error("Column 'date' is missing or not a datetime type for sorting. DRL data might be malformed.")
-        # Attempt to use index if it's datetime
         if isinstance(processed_df.index, pd.DatetimeIndex):
             processed_df['date'] = processed_df.index
             log.info("Used DataFrame index as 'date' column.")

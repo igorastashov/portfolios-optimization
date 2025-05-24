@@ -9,17 +9,10 @@ class NewsAnalysisRequest(BaseModel):
     date_from: Optional[str] = Field(default=None, description="Start date for news search (YYYY-MM-DD).")
     date_to: Optional[str] = Field(default=None, description="End date for news search (YYYY-MM-DD).")
 
-    # Consider adding a Pydantic root_validator to ensure either asset_id or asset_ticker is provided.
-
-# Schemas for results of news analysis can be added here later,
-# e.g., NewsArticle, AnalyzedNews, NewsSentiment.
-# For now, the endpoint will return a TaskResponse.
-
 class NewsChatRequest(BaseModel):
     message: str = Field(..., description="User's message or question for the news chat AI.")
     asset_id: Optional[int] = Field(default=None, description="Optional ID of the asset to focus the chat on.")
     asset_ticker: Optional[str] = Field(default=None, description="Optional ticker of the asset to focus the chat on.")
-    # conversation_id: Optional[str] = Field(default=None, description="Optional ID to maintain chat conversation context (for future enhancements).")
 
 class NewsChatResponse(BaseModel):
     user_message: str
@@ -27,7 +20,6 @@ class NewsChatResponse(BaseModel):
     sources_consulted: Optional[List[str]] = Field(default=None, description="List of sources consulted for the AI response.")
     task_id: Optional[str] = Field(default=None, description="Celery task ID if the response generation is asynchronous.")
 
-# --- Schemas for Stored News Analysis Results --- 
 class NewsAnalysisResultBase(BaseModel):
     asset_ticker: str = Field(..., description="Ticker symbol of the analyzed asset.")
     analysis_timestamp: Optional[datetime] = Field(default_factory=datetime.utcnow, description="Timestamp of when the analysis was performed.")
@@ -40,16 +32,13 @@ class NewsAnalysisResultBase(BaseModel):
     analysis_parameters: Optional[Dict[str, Any]] = Field(None, description="Parameters used for this specific analysis (e.g., model version).")
 
     class Config:
-        from_attributes = True # Enables ORM mode for Pydantic v2
+        from_attributes = True
 
 class NewsAnalysisResultCreate(NewsAnalysisResultBase):
-    # Inherits all fields from NewsAnalysisResultBase.
-    # Additional fields specific to creation can be added here if necessary.
     pass
 
 class NewsAnalysisResultPublic(NewsAnalysisResultBase):
     id: int = Field(..., description="Unique ID of the news analysis result.")
-    # analysis_timestamp is inherited and should be set upon creation or by the database.
 
     class Config:
-        from_attributes = True # Enables ORM mode for Pydantic v2 
+        from_attributes = True 
