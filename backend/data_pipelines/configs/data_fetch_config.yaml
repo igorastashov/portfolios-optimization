@@ -1,0 +1,37 @@
+# Hydra config for Data Fetching pipeline
+
+defaults:
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
+project_name: "PortfolioOptimization/DataManagement"
+queue_name: "default"
+base_docker_image: "python:3.10-slim"
+
+# Parameters for fetch_binance_data_task
+binance_data_fetcher:
+  task_name: "fetch_binance_data_task"
+  tickers: ["BTCUSDT", "ETHUSDT", "SOLUSDT"] # Example tickers
+  intervals: ["1h", "1d"]
+  start_date: "2020-01-01" # Historical start date for full load
+  # API keys should be ClearML secrets or environment variables, not in config
+  # output_s3_bucket: "your-s3-bucket-name"
+  # output_s3_prefix: "market_data/binance"
+  output_dataset_name: "binance_ohlcv_raw"
+  incremental_update: True
+
+# Parameters for fetch_alphavantage_news_task
+alphavantage_news_fetcher:
+  task_name: "fetch_alphavantage_news_task"
+  tickers: ["BTC", "ETH", "SOL"] # Tickers for news (might differ from trading tickers)
+  # news_sources: [""] # Optional, if API supports filtering
+  limit_per_ticker: 100 # Max news items
+  # API key should be a ClearML secret or environment variable
+  # output_s3_bucket: "your-s3-bucket-name"
+  # output_s3_prefix: "news_data/alphavantage"
+  output_dataset_name: "alphavantage_news_raw"
+  summarization_enabled: False # Whether to call a summarization model
+  # summarization_model_endpoint: "" # If summarization_enabled is True
+
+# Global tags
+global_tags: ["data_pipeline", "crypto"] 

@@ -1,96 +1,107 @@
-# Development of a System for Monitoring and Optimization of Investment Portfolios
+# Система мониторинга и оптимизации инвестиционного портфеля
 
-This application provides tools for monitoring and optimizing investment portfolios using various algorithms and techniques from traditional finance and machine learning.
+Данный проект представляет собой комплексную систему для мониторинга, анализа и оптимизации инвестиционных портфелей с использованием современных методов машинного обучения и MLOps практик.
 
-## Features
+## Основные компоненты
 
-- **Dashboard**: Overview of portfolio performance and asset allocation
-- **Portfolio Optimization**: Optimize your portfolio using the Markowitz model
-- **Model Comparison**: Compare performance of different portfolio optimization models
-- **Backtest Results**: Analyze historical performance of different strategies
+Система построена на микросервисной архитектуре и включает в себя:
 
-## Optimization Models
+- **Frontend (Пользовательский интерфейс)**: Разработан на Streamlit, обеспечивает интерактивное взаимодействие с пользователем, визуализацию данных и управление портфелями.
+- **Backend (Серверная часть)**: Реализован на FastAPI, предоставляет RESTful API для взаимодействия с frontend и другими компонентами системы, управляет бизнес-логикой и аутентификацией пользователей (JWT).
+- **Асинхронные задачи**: Оркестрируются с помощью Celery, RabbitMQ (как брокер сообщений) и Redis (для хранения результатов и как бэкенд Celery). Используются для выполнения длительных операций, таких как обучение моделей, бэктестинг и анализ новостей.
+- **База данных**: PostgreSQL используется для хранения пользовательских данных, информации о портфелях, активах и транзакциях. Миграции базы данных управляются с помощью Alembic.
+- **MLOps**: ClearML интегрирован для полного цикла MLOps, включая управление наборами данных (версионирование, хранение), отслеживание экспериментов, обучение моделей (CatBoost, DRL), регистрацию моделей и их развертывание (через ClearML Serving).
+- **Модели машинного обучения**:
+    - *CatBoost*: для прогнозирования цен активов.
+    - *Deep Reinforcement Learning (DRL)*: агенты (например, PPO на базе FinRL/Stable-Baselines3) для динамической ребалансировки портфеля.
+    - *NLP модели (FinBERT, Llama3)*: для анализа тональности новостей и интеграции с чат-ботом (в планах).
+- **Контейнеризация**: Docker и Docker Compose используются для упрощения развертывания и управления всеми сервисами системы.
 
-1. **Markowitz Model**: Traditional mean-variance optimization
-2. **Reinforcement Learning Models**:
-   - A2C (Advantage Actor-Critic)
-   - PPO (Proximal Policy Optimization)
-   - DDPG (Deep Deterministic Policy Gradient)
-   - SAC (Soft Actor-Critic)
+## Функциональные возможности
 
-## Data
+- **Личный кабинет пользователя**: Регистрация, аутентификация, управление профилем.
+- **Управление портфелями**: Создание и отслеживание нескольких инвестиционных портфелей.
+- **Торговый аккаунт**: Учет и добавление транзакций (покупка/продажа активов).
+- **Анализ портфеля**: Расчет текущей стоимости, доходности, P&L, распределения активов (визуализация с помощью графиков и диаграмм).
+- **Прогнозирование цен**: Отображение прогнозов цен для выбранных активов.
+- **Оптимизация и ребалансировка портфеля**: Получение рекомендаций по ребалансировке на основе DRL моделей.
+- **Анализ новостей**: Агрегация и анализ тональности новостей по выбранным активам.
+- **Исследование и бэктестинг**: Возможность запуска симуляций и бэктестов для гипотетических портфелей и стратегий.
+- **Запуск ML пайплайнов**: Интерфейс для инициации процессов обучения и обновления моделей через ClearML.
+- **Взаимодействие с моделями**: Получение предсказаний от развернутых моделей через ClearML Serving.
 
-The system uses historical cryptocurrency price data from Binance, including:
-- BNBUSDT, BTCUSDT, CAKEUSDT, ETHUSDT, LTCUSDT, SOLUSDT, STRKUSDT, TONUSDT
-- USDCUSDT, XRPUSDT, PEPEUSDT, HBARUSDT, APTUSDT, LDOUSDT, JUPUSDT
+## Технологический стек
 
-## Installation
+- **Python 3.10+**
+- **Frontend**: Streamlit
+- **Backend**: FastAPI, Uvicorn
+- **База данных**: PostgreSQL, SQLAlchemy, Alembic
+- **Асинхронные задачи**: Celery, RabbitMQ, Redis
+- **ML/Data Science**: Pandas, NumPy, Scikit-learn, CatBoost, FinRL, Stable-Baselines3, TA-Lib, Transformers, PyTorch/TensorFlow (для NLP)
+- **MLOps**: ClearML, Hydra (для конфигурации ML экспериментов)
+- **Контейнеризация**: Docker, Docker Compose
+- **Прочее**: Pydantic, python-jose (JWT), httpx
 
-### Requirements
+## Развертывание и запуск
 
-- Python 3.8+
-- Streamlit
-- Pandas
-- NumPy
-- Plotly
-- SciPy
+Проект полностью контейнеризован с использованием Docker Compose. Для запуска всех сервисов системы:
 
-### Installation Steps
+1.  **Клонируйте репозиторий**:
+    ```bash
+    git clone <URL_репозитория>
+    cd <название_директории_проекта>
+    ```
+2.  **Конфигурация**: 
+    Скопируйте `.env.example` в `.env` и заполните необходимые переменные окружения (ключи API, параметры подключения к БД и т.д.).
+    ```bash
+    cp .env.example .env
+    # Отредактируйте .env файл
+    ```
+3.  **Сборка и запуск контейнеров**:
+    ```bash
+    docker-compose up --build -d
+    ```
+    Эта команда соберет образы (если они еще не собраны) и запустит все сервисы в фоновом режиме.
 
-1. Clone the repository:
-   ```
-   git clone https://github.com/yourusername/portfolios-optimization.git
-   cd portfolios-optimization
-   ```
+4.  **Доступ к приложениям**:
+    - **Frontend (Streamlit)**: `http://localhost:8501` (или порт, указанный в `docker-compose.yml`)
+    - **Backend (FastAPI Docs)**: `http://localhost:8000/docs` (или порт, указанный в `docker-compose.yml`)
+    - **RabbitMQ Management**: `http://localhost:15672` (логин/пароль по умолчанию: guest/guest)
+    - **ClearML Server**: Если вы разворачиваете свой сервер ClearML, укажите его адрес. Для использования публичного сервера ClearML, настройте ваши ClearML credentials.
 
-2. Install dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+5.  **Применение миграций базы данных** (при первом запуске или после изменения схемы):
+    Миграции Alembic должны применяться автоматически при старте backend контейнера благодаря `entrypoint.sh`.
+    Если требуется ручное применение:
+    ```bash
+    docker-compose exec backend alembic upgrade head
+    ```
 
-   Or with Poetry:
-   ```
-   poetry install
-   ```
-
-## Usage
-
-### Run the Streamlit App
-
-```bash
-streamlit run app.py
-```
-
-### Notebooks
-
-- `1_parse_data_binance.ipynb`: Data collection and preprocessing
-- `2_markowitz-rebalanve.ipynb`: Implementation of Markowitz portfolio optimization
-- `3_finrl_02_tests.ipynb`: Testing of reinforcement learning models
-- `4_finrl_mvp_results.ipynb`: Analysis and comparison of model results
-
-## Project Structure
+## Структура проекта (упрощенная)
 
 ```
 .
-├── app.py                          # Main Streamlit application
-├── data/                           # Data directory
-│   ├── data_compare_eda.csv        # Combined asset price data
-│   ├── *_hourly_data.csv           # Individual asset price data
-│   └── models_predictions/         # Model prediction results
-├── notebooks/                      # Jupyter notebooks
-├── portfolios_optimization/        # Core package
-│   ├── __init__.py
-│   ├── data_loader.py              # Data loading utilities
-│   ├── portfolio_optimizer.py      # Portfolio optimization algorithms
-│   ├── portfolio_analysis.py       # Portfolio performance analysis
-│   └── visualization.py            # Data visualization utilities
-└── README.md                       # This file
+├── backend/                  # Бэкенд FastAPI, Celery worker, ML модели, скрипты MLOps
+│   ├── app/                  # Код FastAPI приложения (API, модели БД, сервисы)
+│   ├── worker/               # Код Celery worker и задачи
+│   ├── ml_models/            # Скрипты обучения, конфигурации ML моделей, пайплайны ClearML
+│   ├── data_pipelines/       # Скрипты получения и обработки данных, пайплайны ClearML
+│   └── Dockerfile            # Dockerfile для бэкенда и воркера
+├── frontend/                 # Frontend Streamlit (в Docker контейнере)
+│   ├── Dockerfile.streamlit  # Dockerfile для Streamlit
+│   └── src/                  # Исходный код Streamlit приложения (страницы, компоненты)
+├── configs/                  # Конфигурационные файлы Hydra для ML и данных
+├── notebooks/                # Jupyter ноутбуки для исследований и экспериментов
+├── docker-compose.yml        # Файл Docker Compose для оркестрации всех сервисов
+├── pyproject.toml            # Зависимости проекта и конфигурация Poetry
+├── alembic.ini               # Конфигурация Alembic
+├── entrypoint.sh             # Скрипт для запуска миграций в Docker
+└── README.md                 # Этот файл
 ```
 
-## Contributing
+## Вклад в проект
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Предложения и Pull Request-ы приветствуются! Пожалуйста, придерживайтесь установленных стандартов кодирования и подробно описывайте вносимые изменения.
 
-## License
+## Лицензия
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+Проект распространяется под лицензией MIT. Подробности смотрите в файле `LICENSE` (если он существует).

@@ -8,533 +8,340 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
+import requests # Для API вызовов
+import traceback # Для отладки
+from decimal import Decimal, InvalidOperation # Added InvalidOperation
+import random
 
-from portfolios_optimization.portfolio_optimizer import optimize_markowitz_portfolio
-from portfolios_optimization.portfolio_analysis import calculate_metrics, plot_efficient_frontier, calculate_drawdown
-from portfolios_optimization.visualization import plot_portfolio_performance, plot_asset_allocation
-from portfolios_optimization.model_trainer import train_model, load_trained_model
-from portfolios_optimization.authentication import (
-    get_user_portfolios, get_user_portfolio, get_user_transactions, 
-    add_transaction, delete_transaction, get_portfolio_with_quantities, update_user_portfolio
-)
-
-# Новая функция для расчета истории стоимости портфеля
-def calculate_portfolio_value_history(username, price_data, start_date, end_date):
-    """
-    Рассчитывает ежедневную историю общей стоимости портфеля пользователя.
-    Учитывает все транзакции и изменения рыночных цен.
-    Если портфель пуст (до первой транзакции), стоимость равна 0.
-    Оптимизированная версия: отслеживает состояние портфеля день за днем.
-
-    Args:
-        username (str): Имя пользователя.
-        price_data (pd.DataFrame): DataFrame с историческими ценами активов (индекс - дата, TZ-naive).
-        start_date (datetime): Начальная дата для расчета истории (TZ-naive).
-        end_date (datetime): Конечная дата для расчета истории (TZ-naive).
-
-    Returns:
-        pd.DataFrame: DataFrame с колонками 'Дата' и 'Стоимость портфеля'.
-    """
-    # Получаем все транзакции пользователя
-    transactions = get_user_transactions(username)
-    
-    # Если транзакций нет, возвращаем нулевую стоимость для всех дат
-    if not transactions:
-        date_range_full = pd.date_range(start=start_date, end=end_date, freq='D')
-        return pd.DataFrame({
-            'Дата': date_range_full,
-            'Стоимость портфеля': [0] * len(date_range_full)
-        })
-    
-    # Подготовка данных о транзакциях
-    transactions_df = pd.DataFrame(transactions)
-    transactions_df['date'] = pd.to_datetime(transactions_df['date'])
-    
-    # Удаляем таймзону, если она есть, и нормализуем до начала дня
-    if hasattr(transactions_df['date'].iloc[0], 'tz') and transactions_df['date'].iloc[0].tz is not None:
-        transactions_df['date'] = transactions_df['date'].dt.tz_localize(None)
-    transactions_df['date_normalized'] = transactions_df['date'].dt.normalize() # Добавляем нормализованную дату
-
-    transactions_df['quantity'] = pd.to_numeric(transactions_df['quantity'])
-    transactions_df['price'] = pd.to_numeric(transactions_df['price'])
-    
-    # Сортируем транзакции по точной дате и времени
-    transactions_df = transactions_df.sort_values(['date', 'id'])
-    
-    # Определяем самую раннюю дату транзакции
-    first_transaction_date = transactions_df['date_normalized'].min()
-
-    # Создаем полный диапазон дат для расчета
-    start_date_norm = pd.Timestamp(start_date).normalize()
-    end_date_norm = pd.Timestamp(end_date).normalize()
-    
-    # Убедимся, что диапазон начинается не раньше первой транзакции 
-    # (или заданной start_date, если она позже)
-    effective_start_date = max(start_date_norm, first_transaction_date)
-    
-    # Если запрашиваемый диапазон полностью до первой транзакции
-    if end_date_norm < first_transaction_date:
-         date_range_full = pd.date_range(start=start_date_norm, end=end_date_norm, freq='D')
-         return pd.DataFrame({
-            'Дата': date_range_full,
-            'Стоимость портфеля': [0] * len(date_range_full)
-         })
-
-    # Диапазон дат для итерации начинается с даты первой транзакции или start_date
-    date_range = pd.date_range(start=effective_start_date, end=end_date_norm, freq='D')
-
-    # Убедимся, что price_data тоже TZ-naive
-    price_data_copy = price_data.copy()
-    if price_data_copy.index.tz is not None:
-        price_data_copy.index = price_data_copy.index.tz_localize(None)
-    
-    # --- ОТЛАДКА: Информация о price_data ---
-    print("------ Price Data Info ------")
-    print(f"Price data index type: {type(price_data_copy.index)}")
-    if not price_data_copy.empty:
-        print(f"Price data start date: {price_data_copy.index.min()}")
-        print(f"Price data end date: {price_data_copy.index.max()}")
-    else:
-        print("Price data is empty!")
-    print("-----------------------------")
-    # --- КОНЕЦ ОТЛАДКИ ---
-
-    # Словарь для текущего состава портфеля {asset: quantity}
-    current_portfolio_assets = {}
-    portfolio_history = []
-    
-    # --- Предварительный расчет состояния портфеля до начала date_range ---
-    # Находим все транзакции ДО НАЧАЛА нашего диапазона date_range
-    initial_transactions = transactions_df[transactions_df['date_normalized'] < effective_start_date]
-    for _, txn in initial_transactions.iterrows():
-        asset = txn['asset']
-        quantity = txn['quantity']
-        txn_type = txn['type']
-        
-        if txn_type == 'Покупка':
-            current_portfolio_assets[asset] = current_portfolio_assets.get(asset, 0) + quantity
-        elif txn_type == 'Продажа':
-            current_portfolio_assets[asset] = current_portfolio_assets.get(asset, 0) - quantity
-        # Убираем активы с нулевым или отрицательным количеством
-        if current_portfolio_assets.get(asset, 0) <= 0:
-            current_portfolio_assets.pop(asset, None)
-
-    # --- ОТЛАДКА: Вывод уникальных дат транзакций ---
-    print("------ Transaction Dates Info ------")
-    if not transactions_df.empty:
-        print("Unique normalized transaction dates:")
-        print(transactions_df['date_normalized'].unique())
-    else:
-        print("Transactions DataFrame is empty!")
-    print("----------------------------------")
-    # --- КОНЕЦ ОТЛАДКИ ---
-
-    # --- Итерация по дням в заданном диапазоне ---
-    last_prices = {}
-    print_debug_counter = 0 # Счетчик для ограничения вывода
-
-    for current_date in date_range:
-        # --- ОТЛАДКА: Вывод перед обработкой дня ---
-        is_debug_day = print_debug_counter < 5 or current_date.date() in [pd.Timestamp('2025-04-01').date(), pd.Timestamp('2025-04-05').date(), pd.Timestamp('2025-04-09').date(), pd.Timestamp('2025-04-12').date()]
-        if is_debug_day:
-             print(f"\n--- Debug Day: {current_date.strftime('%Y-%m-%d')} ---")
-             print(f"Assets BEFORE daily txns: {current_portfolio_assets}")
-        # --- КОНЕЦ ОТЛАДКИ ---
-
-        # Обновляем состав портфеля на основе транзакций ЗА ЭТОТ ДЕНЬ
-        # Сравниваем только дату (год, месяц, день), игнорируя время/таймзону
-        mask = transactions_df['date_normalized'].dt.date == current_date.date()
-        daily_transactions = transactions_df[mask]
-
-        # --- ОТЛАДКА: Проверка daily_transactions ---
-        if is_debug_day:
-            print(f"Found {len(daily_transactions)} transactions for today.")
-        # --- КОНЕЦ ОТЛАДКИ ---
-
-        # *** НАЧАЛО ЦИКЛА ОБРАБОТКИ ТРАНЗАКЦИЙ ДНЯ ***
-        for _, txn in daily_transactions.iterrows():
-            asset = txn['asset']
-            quantity = txn['quantity']
-            txn_type = txn['type']
-
-            # --- ОТЛАДКА: ВНУТРИ ЦИКЛА ОБРАБОТКИ TXN ---
-            if is_debug_day:
-                print(f"  Processing txn: {txn_type} {asset} Qty: {quantity}")
-            # --- КОНЕЦ ОТЛАДКИ ---
-
-            if txn_type == 'Покупка':
-                current_portfolio_assets[asset] = current_portfolio_assets.get(asset, 0) + quantity
-            elif txn_type == 'Продажа':
-                current_portfolio_assets[asset] = current_portfolio_assets.get(asset, 0) - quantity
-
-            # Убираем активы с нулевым или отрицательным количеством после транзакции
-            if current_portfolio_assets.get(asset, 0) <= 0:
-                current_portfolio_assets.pop(asset, None)
-        # *** КОНЕЦ ЦИКЛА ОБРАБОТКИ ТРАНЗАКЦИЙ ДНЯ ***
-
-        # --- ОТЛАДКА: Вывод состояния активов ПОСЛЕ обработки TXN ---
-        if is_debug_day:
-             print(f"Assets AFTER daily txns: {current_portfolio_assets}")
-        # --- КОНЕЦ ОТЛАДКИ ---
-
-        # Расчет текущей стоимости портфеля на конец дня current_date
-        portfolio_value = 0
-        assets_to_remove = [] # Активы, для которых цена не найдена и нет в портфеле
-        for asset, quantity in current_portfolio_assets.items():
-            if quantity > 0:
-                current_price = None
-                price_source = "None"
-                # 1. Ищем цену на текущую дату
-                if asset in price_data_copy.columns: # Good, checks column exists
-                    try:
-                        # Сначала пытаемся получить цену точно на current_date
-                        # Используем .get(), чтобы избежать KeyError, если даты нет
-                        price_on_date = price_data_copy.get(current_date, {}).get(asset)
-
-                        if pd.notna(price_on_date):
-                            current_price = price_on_date
-                            last_prices[asset] = current_price # Обновляем кэш
-                            price_source = "Exact Date"
-                        else:
-                            # Если на current_date цена NaN или даты нет, ищем последнюю не-NaN цену до current_date
-                            price_series = price_data_copy.loc[:current_date, asset].dropna()
-                            if not price_series.empty:
-                               current_price = price_series.iloc[-1]
-                               last_prices[asset] = current_price # Обновляем кэш
-                               price_source = "Past Date"
-                    except KeyError:
-                        # Обрабатываем случай, если current_date нет в индексе, но столбец asset есть
-                         try:
-                             price_series = price_data_copy.loc[:current_date, asset].dropna()
-                             if not price_series.empty:
-                                current_price = price_series.iloc[-1]
-                                last_prices[asset] = current_price # Обновляем кэш
-                                price_source = "Past Date (KeyError)"
-                         except KeyError:
-                             pass # Актива нет в столбцах или нет дат <= current_date
-
-                # 2. Если цена не найдена на текущую дату (или ранее), используем последнюю известную цену из кэша
-                if current_price is None:
-                   current_price = last_prices.get(asset)
-                   if current_price is not None:
-                       price_source = "Cache"
-
-                # 3. Если цены все еще нет (не было в price_data и нет в кэше),
-                #    пытаемся взять цену из последней транзакции ЭТОГО актива ДО current_date
-                if current_price is None:
-                    asset_transactions = transactions_df[
-                        (transactions_df['asset'] == asset) &
-                        (transactions_df['date_normalized'] <= current_date)
-                    ]
-                    if not asset_transactions.empty:
-                        current_price = asset_transactions['price'].iloc[-1]
-                        last_prices[asset] = current_price # Обновляем кэш - ДОБАВЛЕНО
-                        price_source = "Transaction"
-
-                # Если цена найдена, добавляем стоимость
-                value_added = 0
-                if current_price is not None and pd.notna(current_price):
-                    portfolio_value += quantity * current_price
-                    value_added = quantity * current_price
-                
-                # --- ОТЛАДКА: Вывод для каждого актива ---
-                if is_debug_day:
-                    print(f"  Asset: {asset}, Qty: {quantity:.4f}, Price: {current_price}, Source: {price_source}, Added Value: {value_added:.2f}")
-                # --- КОНЕЦ ОТЛАДКИ ---
-
-        # Добавляем запись о стоимости портфеля на текущую дату
-        portfolio_history.append({'Дата': current_date, 'Стоимость портфеля': portfolio_value})
-
-        # --- ОТЛАДКА: Вывод итогов дня ---
-        if is_debug_day:
-            print(f"Total Portfolio Value for {current_date.strftime('%Y-%m-%d')}: {portfolio_value:.2f}")
-            print_debug_counter += 1
-        # --- КОНЕЦ ОТЛАДКИ ---
-
-    # Создаем DataFrame с историей стоимости
-    history_df = pd.DataFrame(portfolio_history)
-    
-    # --- Добавляем дни ДО первой транзакции с нулевой стоимостью ---
-    # (если start_date раньше первой транзакции)
-    if start_date_norm < effective_start_date:
-        leading_zeros_dates = pd.date_range(start=start_date_norm, end=effective_start_date - pd.Timedelta(days=1), freq='D')
-        leading_zeros_df = pd.DataFrame({
-            'Дата': leading_zeros_dates,
-            'Стоимость портфеля': [0] * len(leading_zeros_dates)
-        })
-        history_df = pd.concat([leading_zeros_df, history_df], ignore_index=True)
-
-    # Убедимся, что даты уникальны и отсортированы
-    history_df = history_df.sort_values('Дата').drop_duplicates(subset=['Дата'], keep='last')
-    
-    return history_df
-
-def render_dashboard(username, price_data, model_returns, model_actions, assets):
-    """Отображение страницы Dashboard"""
-    st.header("Portfolio Dashboard")
-    
-    # Получение данных о портфеле пользователя на основе транзакций
-    portfolio_data = get_portfolio_with_quantities(username)
-    
-    # Проверка наличия активов в портфеле пользователя
-    has_portfolio = portfolio_data and any(portfolio_data["quantities"].values())
-    
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        st.subheader("Portfolio Performance")
-        
-        # Создаем tabs для переключения между моделями и портфелем пользователя
-        perf_tabs = st.tabs(["My Portfolio", "Model Performance"])
-        
-        with perf_tabs[0]:
-            if not has_portfolio:
-                st.info("У вас пока нет активов в портфеле. Добавьте транзакции в разделе 'Управление активами', чтобы сформировать портфель.")
-                
-                # Кнопка перехода к разделу "Управление активами"
-                if st.button("Перейти к управлению активами", key="goto_manage_assets_from_dashboard"):
-                    st.session_state.active_page = "Управление активами"
-                    st.rerun()
-            else:
-                # Отображение информации о портфеле пользователя
-                # Создание данных о доходности пользовательского портфеля
-                
-                # Временной период для анализа
-                lookback_days = st.slider(
-                    "Период анализа (дней)",
-                    min_value=7,
-                    max_value=365,
-                    value=30,
-                    step=1
-                )
-                
-                end_date = price_data.index[-1]
-                start_date = end_date - timedelta(days=lookback_days)
-                
-                # Создаем DataFrame для хранения стоимости портфеля пользователя
-                portfolio_dates = price_data.loc[start_date:end_date].index
-                portfolio_values = []
-                
-                for date in portfolio_dates:
-                    value_at_date = 0
-                    for asset, quantity in portfolio_data["quantities"].items():
-                        if quantity > 0 and asset in price_data.columns:
-                            try:
-                                price_at_date = price_data.loc[date, asset]
-                                value_at_date += quantity * price_at_date
-                            except:
-                                pass
-                    portfolio_values.append(value_at_date)
-                
-                # Создание DataFrame с ценами портфеля
-                portfolio_df = pd.DataFrame({
-                    'Date': portfolio_dates,
-                    'Portfolio Value': portfolio_values
-                })
-                
-                # Расчет доходности портфеля
-                portfolio_df['Daily Return'] = portfolio_df['Portfolio Value'].pct_change()
-                portfolio_df = portfolio_df.dropna()
-                
-                # Расчет накопленной доходности
-                portfolio_df['Cumulative Return'] = (1 + portfolio_df['Daily Return']).cumprod() - 1
-                
-                # График накопленной доходности
-                fig = px.line(
-                    portfolio_df, 
-                    x='Date', 
-                    y='Cumulative Return',
-                    title="Cumulative Portfolio Return",
-                    labels={"Cumulative Return": "Return", "Date": "Date"}
-                )
-                fig.update_yaxes(tickformat=".1%")
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Метрики портфеля
-                col1, col2, col3 = st.columns(3)
-                
-                # Расчет общей доходности
-                total_return = portfolio_df['Cumulative Return'].iloc[-1] * 100
-                
-                # Расчет годовой доходности
-                days = len(portfolio_df)
-                ann_return = ((1 + portfolio_df['Cumulative Return'].iloc[-1]) ** (365/days) - 1) * 100
-                
-                # Расчет волатильности (годовой)
-                volatility = portfolio_df['Daily Return'].std() * np.sqrt(252) * 100
-                
-                # Расчет коэффициента Шарпа
-                sharpe = ann_return / volatility if volatility > 0 else 0
-                
-                col1.metric("Общая доходность", f"{total_return:.2f}%")
-                col2.metric("Годовая доходность", f"{ann_return:.2f}%")
-                col3.metric("Коэффициент Шарпа", f"{sharpe:.2f}")
-                
-                # Активы в портфеле
-                st.subheader("Portfolio Composition")
-                
-                # Создаем DataFrame для отображения состава портфеля
-                assets_data = []
-                for asset, quantity in portfolio_data["quantities"].items():
-                    if quantity > 0:
-                        current_price = price_data[asset].iloc[-1] if asset in price_data.columns else 0
-                        asset_value = quantity * current_price
-                        assets_data.append({
-                            "Asset": asset,
-                            "Quantity": quantity,
-                            "Current Price": current_price,
-                            "Value": asset_value,
-                            "Weight": asset_value / sum(quantity * price_data[a].iloc[-1] 
-                                                      for a, q in portfolio_data["quantities"].items() 
-                                                      if q > 0 and a in price_data.columns)
-                        })
-                
-                assets_df = pd.DataFrame(assets_data)
-                
-                if not assets_df.empty:
-                    # График весов активов
-                    fig = px.pie(
-                        assets_df,
-                        values="Value",
-                        names="Asset",
-                        title="Portfolio Allocation"
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Таблица активов
-                    formatted_assets = assets_df.copy()
-                    formatted_assets["Quantity"] = formatted_assets["Quantity"].apply(lambda x: f"{x:,.8f}")
-                    formatted_assets["Current Price"] = formatted_assets["Current Price"].apply(lambda x: f"${x:,.2f}")
-                    formatted_assets["Value"] = formatted_assets["Value"].apply(lambda x: f"${x:,.2f}")
-                    formatted_assets["Weight"] = formatted_assets["Weight"].apply(lambda x: f"{x*100:.2f}%")
-                    
-                    st.dataframe(formatted_assets, use_container_width=True)
-        
-        with perf_tabs[1]:
-            # Выбор моделей для отображения
-            models = st.multiselect(
-                "Select models to compare",
-                options=model_returns.columns.tolist() if not model_returns.empty else [],
-                default=model_returns.columns.tolist()[:2] if not model_returns.empty and len(model_returns.columns) > 1 else []
-            )
-            
-            if models:
-                # Расчет накопленной доходности
-                cum_returns = model_returns[models].cumsum()
-                
-                # График доходности
-                fig = px.line(
-                    cum_returns, 
-                    x=cum_returns.index, 
-                    y=cum_returns.columns,
-                    title="Cumulative Model Returns",
-                    labels={"value": "Return", "variable": "Model"}
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            
-                # Таблица метрик
-                metrics = pd.DataFrame({
-                    "Total Return": cum_returns.iloc[-1],
-                    "Sharpe Ratio": cum_returns.iloc[-1] / cum_returns.std(),
-                    "Max Drawdown": cum_returns.apply(lambda x: (x.cummax() - x).max())
-                })
-                
-                st.table(metrics)
-            else:
-                st.info("Выберите модели для сравнения")
-    
-    with col2:
-        st.subheader("Latest Allocations")
-        
-        # Создаем tabs для переключения между моделями и портфелем пользователя
-        alloc_tabs = st.tabs(["My Allocation", "Model Allocation"])
-        
-        with alloc_tabs[0]:
-            if not has_portfolio:
-                st.info("Добавьте активы в портфель")
-            else:
-                # Создаем DataFrame для отображения состава портфеля
-                assets_data = []
-                for asset, quantity in portfolio_data["quantities"].items():
-                    if quantity > 0:
-                        current_price = price_data[asset].iloc[-1] if asset in price_data.columns else 0
-                        asset_value = quantity * current_price
-                        assets_data.append({
-                            "Asset": asset,
-                            "Value": asset_value
-                        })
-                
-                assets_df = pd.DataFrame(assets_data)
-                
-                if not assets_df.empty:
-                    # График весов активов
-                    fig = px.pie(
-                        assets_df,
-                        values="Value",
-                        names="Asset",
-                        title="Your Current Allocation"
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-        
-        with alloc_tabs[1]:
-            # Получение списка моделей с данными распределения
-            available_models = list(model_actions.keys())
-            
-            if available_models:
-                # Выбор модели
-                selected_model = st.selectbox(
-                    "Select model",
-                    options=available_models,
-                    index=0
-                )
-                
-                if selected_model and not model_actions[selected_model].empty:
-                    # Получение последнего распределения
-                    latest_allocation = model_actions[selected_model].iloc[-1]
-                    
-                    # Круговая диаграмма
-                    fig = px.pie(
-                        values=latest_allocation.values,
-                        names=latest_allocation.index,
-                        title=f"Latest {selected_model.upper()} Allocation"
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No allocation data available. Train models first or load existing models.")
-    
-    # Показатели активов
-    st.subheader("Asset Performance")
-    
-    if assets:
-        # Выбор активов для отображения
-        if has_portfolio:
-            # По умолчанию показываем активы из портфеля пользователя
-            default_assets = [asset for asset, quantity in portfolio_data["quantities"].items() 
-                             if quantity > 0 and asset in assets]
+# --- Helper function to fetch transactions via API ---
+def fetch_transactions_api(backend_api_url, auth_headers):
+    try:
+        response = requests.get(f"{backend_api_url}/portfolios/me/transactions", headers=auth_headers)
+        response.raise_for_status()
+        transactions_list = response.json()
+        for tx in transactions_list:
+            if 'transaction_date' in tx and isinstance(tx['transaction_date'], str):
+                tx['transaction_date'] = datetime.fromisoformat(tx['transaction_date'].replace('Z', '+00:00'))
+            elif 'created_at' in tx and isinstance(tx['created_at'], str): # Fallback if transaction_date is not present
+                 tx['transaction_date'] = datetime.fromisoformat(tx['created_at'].replace('Z', '+00:00'))
+            tx['quantity'] = float(tx.get('quantity', 0))
+            tx['price'] = float(tx.get('price', 0))
+            tx['fee'] = float(tx.get('fee', 0))
+            if 'asset_ticker' in tx and 'asset' not in tx:
+                tx['asset'] = tx['asset_ticker']
+            if 'transaction_type' in tx and 'type' not in tx:
+                 tx['type'] = tx['transaction_type']
+        return transactions_list
+    except requests.exceptions.HTTPError as http_err:
+        if http_err.response.status_code == 401:
+            st.error("Сессия истекла или недействительна. Пожалуйста, войдите снова.")
         else:
-            default_assets = assets[:5] if len(assets) > 5 else assets
+            st.error(f"Не удалось загрузить транзакции (HTTP {http_err.response.status_code}): {http_err.response.text}")
+        return []
+    except requests.exceptions.RequestException as e:
+        st.error(f"Ошибка соединения при загрузке транзакций: {e}")
+        return []
+    except Exception as e:
+        st.error(f"Непредвиденная ошибка при загрузке транзакций: {e}")
+        traceback.print_exc()
+        return []
+
+# --- Helper function to fetch portfolio summary via API ---
+def fetch_portfolio_summary_api(backend_api_url, auth_headers):
+    try:
+        response = requests.get(f"{backend_api_url}/portfolios/me/summary", headers=auth_headers)
+        response.raise_for_status()
+        summary_data = response.json()
+        # Конвертируем числовые строки в Decimal где нужно
+        summary_data['total_portfolio_value'] = Decimal(summary_data.get('total_portfolio_value', 0))
+        if summary_data.get('total_invested_value') is not None:
+            summary_data['total_invested_value'] = Decimal(summary_data.get('total_invested_value'))
+        if summary_data.get('overall_pnl_absolute') is not None:
+            summary_data['overall_pnl_absolute'] = Decimal(summary_data.get('overall_pnl_absolute'))
+        if summary_data.get('total_value_24h_change_abs') is not None:
+            summary_data['total_value_24h_change_abs'] = Decimal(summary_data.get('total_value_24h_change_abs'))
         
-        selected_assets = st.multiselect(
-            "Select assets",
-            options=assets,
-            default=default_assets
-        )
+        for asset_summary in summary_data.get('assets', []):
+            asset_summary['quantity'] = Decimal(asset_summary.get('quantity',0))
+            if asset_summary.get('average_buy_price') is not None:
+                asset_summary['average_buy_price'] = Decimal(asset_summary.get('average_buy_price'))
+            if asset_summary.get('current_market_price') is not None:
+                asset_summary['current_market_price'] = Decimal(asset_summary.get('current_market_price'))
+            if asset_summary.get('current_value') is not None:
+                asset_summary['current_value'] = Decimal(asset_summary.get('current_value'))
+            if asset_summary.get('pnl_absolute') is not None:
+                asset_summary['pnl_absolute'] = Decimal(asset_summary.get('pnl_absolute'))
+            if asset_summary.get('value_24h_change_abs') is not None:
+                asset_summary['value_24h_change_abs'] = Decimal(asset_summary.get('value_24h_change_abs'))
+        return summary_data
+    except requests.exceptions.HTTPError as http_err:
+        if http_err.response.status_code == 401:
+            st.error("Сессия истекла или недействительна. Пожалуйста, войдите снова.")
+        elif http_err.response.status_code == 404: # Портфель может еще не существовать
+            st.info("Портфель еще не создан или пуст. Данные для сводки отсутствуют.")
+            return None # Возвращаем None, чтобы UI мог это обработать
+        else:
+            st.error(f"Не удалось загрузить сводку портфеля (HTTP {http_err.response.status_code}): {http_err.response.text}")
+        return None
+    except requests.exceptions.RequestException as e:
+        st.error(f"Ошибка соединения при загрузке сводки портфеля: {e}")
+        return None
+    except Exception as e:
+        st.error(f"Непредвиденная ошибка при обработке сводки портфеля: {e}")
+        traceback.print_exc()
+        return None
+
+# --- Helper function to fetch portfolio value history via API ---
+def fetch_portfolio_value_history_api(backend_api_url, auth_headers, start_date_str=None, end_date_str=None, lookback_days=None):
+    params = {}
+    if start_date_str: params['startDate'] = start_date_str
+    if end_date_str: params['endDate'] = end_date_str
+    if lookback_days and not (start_date_str and end_date_str) : params['lookbackDays'] = lookback_days
+    
+    try:
+        response = requests.get(f"{backend_api_url}/portfolios/me/value-history", headers=auth_headers, params=params)
+        response.raise_for_status()
+        history_response_data = response.json()
+        history_points = history_response_data.get('history', [])
         
-        if selected_assets:
-            # Расчет нормализованных цен
-            normalized_prices = price_data[selected_assets] / price_data[selected_assets].iloc[0]
+        df_history = pd.DataFrame(history_points)
+        if not df_history.empty:
+            df_history['date'] = pd.to_datetime(df_history['date'])
+            df_history['value'] = df_history['value'].apply(lambda x: Decimal(str(x)))
             
-            # График цен активов
-            fig = px.line(
-                normalized_prices, 
-                x=normalized_prices.index, 
-                y=normalized_prices.columns,
-                title="Normalized Asset Prices",
-                labels={"value": "Normalized Price", "variable": "Asset"}
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        return df_history, history_response_data.get('start_date'), history_response_data.get('end_date'), history_response_data.get('currency_code')
+    except requests.exceptions.HTTPError as http_err:
+        st.error(f"Не удалось загрузить историю стоимости (HTTP {http_err.response.status_code}): {http_err.response.text}")
+        return pd.DataFrame(), None, None, None
+    except requests.exceptions.RequestException as e:
+        st.error(f"Ошибка соединения при загрузке истории стоимости: {e}")
+        return pd.DataFrame(), None, None, None
+    except Exception as e:
+        st.error(f"Непредвиденная ошибка при обработке истории стоимости: {e}")
+        traceback.print_exc()
+        return pd.DataFrame(), None, None, None
+
+def render_dashboard(username: str, backend_api_url: str, auth_headers: dict, available_assets: list): # Added backend_api_url, auth_headers, available_assets
+    st.header(f"Аналитический дашборд, {username}")
+    st.markdown("---")
+
+    # Initialize session state for this page if not already done
+    if 'db_status_message' not in st.session_state: st.session_state.db_status_message = ""
+    if 'db_portfolio_summary' not in st.session_state: st.session_state.db_portfolio_summary = None
+    if 'db_portfolio_history' not in st.session_state: st.session_state.db_portfolio_history = None
+    if 'db_recent_transactions' not in st.session_state: st.session_state.db_recent_transactions = []
+    if 'db_kpi_data' not in st.session_state: st.session_state.db_kpi_data = {} # Placeholder for KPIs
+    if 'db_model_performance_data' not in st.session_state: st.session_state.db_model_performance_data = pd.DataFrame() # Placeholder
+
+    # --- Data Loading ---
+    # Load data on first run or if explicitly requested by a refresh button (not implemented yet)
+    # We can use a simple flag to load once per session or manage it more granularly.
+    if 'db_data_loaded' not in st.session_state:
+        st.session_state.db_data_loaded = False
+
+    if not st.session_state.db_data_loaded:
+        with st.spinner("Загрузка данных для дашборда..."):
+            # 1. Fetch Portfolio Summary (for allocation chart and some KPIs)
+            summary_data, error = fetch_portfolio_summary_api(backend_api_url, auth_headers)
+            if error:
+                st.session_state.db_status_message += f"Ошибка загрузки сводки портфеля: {error}\n"
+            else:
+                st.session_state.db_portfolio_summary = summary_data
+
+            # 2. Fetch Portfolio Value History (for dynamics chart)
+            # Default to 90 days for the main dashboard chart
+            history_data, error = fetch_portfolio_value_history_api(backend_api_url, auth_headers, lookback_days=90)
+            if error:
+                st.session_state.db_status_message += f"Ошибка загрузки истории стоимости: {error}\n"
+            else:
+                st.session_state.db_portfolio_history = history_data
+            
+            # 3. Fetch Recent Transactions
+            transactions_data, error = fetch_transactions_api(backend_api_url, auth_headers, params={"limit": 5}) # Get latest 5
+            if error:
+                st.session_state.db_status_message += f"Ошибка загрузки транзакций: {error}\n"
+            else:
+                st.session_state.db_recent_transactions = transactions_data
+            
+            # 4. Placeholder for KPIs - In a real app, this would be an API call
+            st.session_state.db_kpi_data = {
+                "total_trades_value_month": Decimal(random.uniform(50000, 200000)).quantize(Decimal("0.01")),
+                "drl_profitability_pct": Decimal(random.uniform(5, 25)).quantize(Decimal("0.01")),
+                "avg_portfolio_return_pa": Decimal(random.uniform(8, 18)).quantize(Decimal("0.01")),
+                "active_strategies": random.randint(1, 5)
+            }
+
+            # 5. Placeholder for Model Performance - In a real app, this would be an API call
+            # For now, create a dummy DataFrame similar to what might come from an API
+            model_names = [f"Стратегия DRL {i+1}" for i in range(5)]
+            model_perf_values = [random.uniform(0.05, 0.35) for _ in range(5)] # e.g., Sharpe or % return
+            st.session_state.db_model_performance_data = pd.DataFrame({
+                "model_name": model_names,
+                "performance_metric": model_perf_values
+            }).sort_values(by="performance_metric", ascending=False)
+
+            if not st.session_state.db_status_message:
+                st.session_state.db_status_message = "Данные дашборда успешно загружены."
+            st.session_state.db_data_loaded = True # Mark as loaded
+        
+        if st.session_state.db_status_message:
+            if "Ошибка" in st.session_state.db_status_message:
+                st.error(st.session_state.db_status_message)
+            else:
+                # st.success(st.session_state.db_status_message) # Can be too verbose
+                pass
+
+
+    # --- Display KPIs ---
+    st.subheader("Ключевые показатели эффективности (KPI)")
+    kpis = st.session_state.db_kpi_data
+    if kpis:
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Объем торгов (мес.)", f"${kpis.get('total_trades_value_month', 0):,.0f}", help="Симулированные данные")
+        col2.metric("Прибыльность DRL (сред.)", f"{kpis.get('drl_profitability_pct', 0):.2f}%", help="Симулированные данные")
+        col3.metric("Доходность портфеля (сред. годовая)", f"{kpis.get('avg_portfolio_return_pa', 0):.2f}%", help="Симулированные данные")
+        col4.metric("Активных стратегий", str(kpis.get('active_strategies', 'N/A')), help="Симулированные данные")
     else:
-        st.info("No asset data available. Please check data sources.")
+        st.info("Данные KPI недоступны. Требуется API эндпоинт.")
+    st.markdown("---")
+
+    # --- Main Layout: Two Columns ---
+    col_main_chart, col_side_info = st.columns([2, 1])
+
+    with col_main_chart:
+        st.subheader("Динамика стоимости портфеля (90 дней)")
+        history = st.session_state.db_portfolio_history
+        if history and history.get('history'):
+            history_df = pd.DataFrame([p.model_dump() for p in history['history']])
+            history_df['date'] = pd.to_datetime(history_df['date'])
+            history_df = history_df.sort_values(by='date')
+            
+            fig_dynamics = px.line(history_df, x='date', y='value', title="Стоимость портфеля", labels={'value': 'Стоимость (USD)', 'date': 'Дата'})
+            fig_dynamics.update_layout(margin=dict(l=0, r=0, t=30, b=0))
+            st.plotly_chart(fig_dynamics, use_container_width=True)
+        elif history is None and not st.session_state.db_status_message: # Data not loaded yet
+             st.info("Загрузка графика динамики...")
+        else:
+            st.warning("Данные для графика динамики стоимости портфеля недоступны.")
+
+    with col_side_info:
+        st.subheader("Распределение активов")
+        summary = st.session_state.db_portfolio_summary
+        if summary and summary.get('assets'):
+            assets_data = []
+            for asset_summary in summary['assets']:
+                try:
+                    # Ensure quantity and current_value are Decimal for calculations
+                    quantity = Decimal(str(asset_summary.get('quantity', 0)))
+                    current_value = Decimal(str(asset_summary.get('current_value', 0))) # This should be 'current_value' from summary
+                    if quantity > Decimal('1e-9') and current_value > Decimal('0'): # Filter out zero/negligible value assets
+                        assets_data.append({
+                            "ticker": asset_summary.get('ticker', 'N/A'),
+                            "current_value": current_value
+                        })
+                except (InvalidOperation, TypeError) as e:
+                    st.error(f"Ошибка обработки данных актива {asset_summary.get('ticker','N/A')}: {e}")
+
+
+            if assets_data:
+                alloc_df = pd.DataFrame(assets_data)
+                alloc_df = alloc_df[alloc_df['current_value'] > 0] # Ensure only positive values for pie chart
+
+                if not alloc_df.empty:
+                    fig_pie = px.pie(alloc_df, values="current_value", names="ticker", hole=0.3)
+                    fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+                    fig_pie.update_layout(margin=dict(l=0, r=0, t=0, b=0), showlegend=False, height=280)
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                else:
+                    st.info("Нет активов с положительной стоимостью для отображения распределения.")
+            else:
+                st.info("Нет данных для графика распределения активов.")
+
+        elif summary is None and not st.session_state.db_status_message : # Data not loaded yet
+            st.info("Загрузка данных распределения...")
+        else:
+            st.info("Нет активов в портфеле или данные о них недоступны.")
+
+        st.markdown("---")
+        st.subheader("Последние операции")
+        recent_txs = st.session_state.db_recent_transactions
+        if recent_txs:
+            tx_display_list = []
+            for tx_raw in recent_txs:
+                # tx_raw is already a dict from API. Ensure fields are present.
+                tx_date_str = tx_raw.get('transaction_date') or tx_raw.get('created_at')
+                tx_date = pd.to_datetime(tx_date_str).strftime('%Y-%m-%d %H:%M') if tx_date_str else "N/A"
+                
+                type_str = str(tx_raw.get('transaction_type', 'N/A')).upper()
+                if type_str == "BUY": type_emoji = "➡️"
+                elif type_str == "SELL": type_emoji = "⬅️"
+                else: type_emoji = "⚙️"
+
+                tx_display_list.append({
+                    "Дата": tx_date,
+                    "Тип": f"{type_emoji} {type_str}",
+                    "Актив": tx_raw.get('asset_ticker', 'N/A'),
+                    "Кол-во": f"{Decimal(str(tx_raw.get('quantity',0))):.4f}", # Ensure Decimal conversion
+                    "Цена": f"${Decimal(str(tx_raw.get('price',0))):.2f}"      # Ensure Decimal conversion
+                })
+            tx_df = pd.DataFrame(tx_display_list)
+            st.dataframe(tx_df, use_container_width=True, height=200) # Adjust height as needed
+        elif not recent_txs and st.session_state.db_portfolio_summary is not None : # Data loaded, but no transactions
+            st.info("Нет недавних операций.")
+        else: # Data not loaded yet
+            st.info("Загрузка последних операций...")
+
+
+    st.markdown("---")
+    
+    # --- Performance Section ---
+    st.subheader("Производительность моделей (Top 5)")
+    model_perf_df = st.session_state.db_model_performance_data
+    if not model_perf_df.empty:
+        fig_model_perf = px.bar(
+            model_perf_df.head(5),
+            x="model_name",
+            y="performance_metric",
+            title="Топ-5 моделей по производительности (симуляция)",
+            labels={"model_name": "Модель/Стратегия", "performance_metric": "Показатель эффективности (например, Sharpe)"},
+            color="model_name"
+        )
+        fig_model_perf.update_layout(xaxis_title=None, yaxis_title="Эффективность", showlegend=False)
+        st.plotly_chart(fig_model_perf, use_container_width=True)
+    else:
+        st.info("Данные о производительности моделей недоступны. Требуется API эндпоинт.")
+
+    st.markdown("---")
+    st.subheader("Рекомендации по ребалансировке")
+    # Placeholder for recommendations - this could link to the recommendations page or show a brief summary from an API
+    st.info("Детальные рекомендации доступны на странице 'Рекомендации'. (Эта секция будет обновлена для отображения краткой сводки).")
+    if st.button("Перейти к Рекомендациям", key="db_goto_reco"):
+        st.session_state.active_page = "Рекомендации"
+        st.rerun()
+
+    # Old code that used price_data, model_returns, model_actions, assets directly
+    # This is now replaced by API calls and new logic above.
+    # Commenting out or removing the old implementation details.
+    """
+    # ... (old code for KPIs, charts, transactions using local data) ...
+    # Пример старого кода для KPI:
+    # total_volume = price_data.apply(lambda x: x * np.random.randint(1, 100)).sum().sum()
+    # col1.metric("Общий объем торгов", f"${total_volume:,.0f}")
+
+    # Пример старого кода для графика:
+    # portfolio_value_over_time = price_data.mean(axis=1) * 1000 # Примерный расчет
+    # fig = go.Figure()
+    # fig.add_trace(go.Scatter(x=portfolio_value_over_time.index, y=portfolio_value_over_time.values, mode='lines', name='Стоимость портфеля'))
+    # st.plotly_chart(fig, use_container_width=True)
+    
+    # Пример старого кода для распределения:
+    # current_portfolio = assets[:5] # Пример
+    # current_allocations = np.random.rand(len(current_portfolio))
+    # current_allocations /= current_allocations.sum()
+    # fig_pie = px.pie(values=current_allocations, names=current_portfolio, title="Распределение активов")
+    # st.plotly_chart(fig_pie, use_container_width=True)
+    """
+    return # Explicit return, though not strictly necessary for Streamlit rendering functions
 
 def render_portfolio_optimization(username, price_data, assets):
     """Отображение страницы оптимизации портфеля"""
@@ -1360,920 +1167,419 @@ def render_backtest(username, model_returns, price_data):
             else:
                 st.warning("No data available for the selected period.")
 
-def render_account_dashboard(username, price_data, assets):
-    """Отображение страницы аккаунта в стиле Bybit"""
+def render_account_dashboard(username: str, available_assets: list, backend_api_url: str, auth_headers: dict):
     st.header("Единый торговый аккаунт")
-    
-    # Получение данных о портфеле пользователя на основе транзакций
-    portfolio_data = get_portfolio_with_quantities(username)
-    
-    # Получаем транзакции для определения "сегодняшней" даты
-    transactions = get_user_transactions(username)
-    if transactions:
-        # Находим последнюю транзакцию и используем её дату как "текущую"
-        try:
-            transaction_dates = [pd.to_datetime(t["date"]) for t in transactions]
-            if hasattr(transaction_dates[0], 'tz') and transaction_dates[0].tz is not None:
-                transaction_dates = [d.tz_localize(None) for d in transaction_dates]
-            current_date = max(transaction_dates)
-            current_time = current_date.strftime("%Y-%m-%d %H:%M:%S")
-            st.caption(f"Последнее обновление: {current_time} (дата последней транзакции)")
-        except (ValueError, IndexError):
-            # Если проблема с обработкой дат, используем системную дату
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.caption(f"Последнее обновление: {current_time}")
-    else:
-        # Если нет транзакций, используем системную дату
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        st.caption(f"Последнее обновление: {current_time}")
-    
-    # Проверка наличия активов в портфеле
-    has_assets = portfolio_data and any(portfolio_data["quantities"].values())
-    
-    if not has_assets:
-        st.info("""
-        У вас пока нет активов в портфеле.
-        
-        Чтобы сформировать портфель:
-        1. Перейдите в раздел 'Управление активами'
-        2. На вкладке 'Добавить транзакцию' добавьте свои первые активы
-        3. После добавления транзакций, портфель сформируется автоматически
-        """)
-        
-        # Кнопка перехода к разделу "Управление активами"
-        if st.button("Перейти к управлению активами", key="goto_manage_assets_from_account"):
-            st.session_state.active_page = "Управление активами"
-            st.rerun()
+
+    # --- Инициализация состояния сессии для этой страницы ---
+    # Префикс 'ad_' для Account Dashboard
+    if 'ad_portfolio_summary_data' not in st.session_state: st.session_state.ad_portfolio_summary_data = None
+    if 'ad_force_reload_summary' not in st.session_state: st.session_state.ad_force_reload_summary = True
+    if 'ad_value_history_df' not in st.session_state: st.session_state.ad_value_history_df = pd.DataFrame()
+    if 'ad_history_start_date' not in st.session_state: st.session_state.ad_history_start_date = None
+    if 'ad_history_end_date' not in st.session_state: st.session_state.ad_history_end_date = None
+    if 'ad_history_currency' not in st.session_state: st.session_state.ad_history_currency = "USD"
+    if 'ad_last_interval_key' not in st.session_state: st.session_state.ad_last_interval_key = None 
+
+    if st.button("🔄 Обновить данные аккаунта"):
+        st.session_state.ad_force_reload_summary = True
+        st.session_state.ad_value_history_df = pd.DataFrame() 
+        st.rerun() 
+
+    if st.session_state.ad_force_reload_summary:
+        with st.spinner("Загрузка сводки портфеля..."):
+            st.session_state.ad_portfolio_summary_data = fetch_portfolio_summary_api(backend_api_url, auth_headers)
+        st.session_state.ad_force_reload_summary = False
+
+    portfolio_summary = st.session_state.ad_portfolio_summary_data
+
+    if not portfolio_summary:
+        st.info("Не удалось загрузить данные портфеля или портфель пуст. "
+                "Если вы только что зарегистрировались или еще не добавляли транзакции, "
+                "перейдите в раздел 'Управление транзакциями'.")
+        if st.button("Перейти к управлению транзакциями", key="goto_tm_from_ad_empty"):
+            st.warning("Пожалуйста, перейдите на страницу 'Управление активами' через боковое меню.")
         return
+
+    st.caption(f"Данные портфеля '{portfolio_summary.get('name', 'N/A')}' ({portfolio_summary.get('portfolio_id', 'N/A')}). Валюта: {portfolio_summary.get('currency_code', 'N/A')}")
+    st.caption(f"Последнее обновление: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (локальное время UI)")
     
-    # Создание данных для отображения информации об аккаунте
-    all_assets = {}
-    total_balance = 0
-    
-    # Обработка данных портфеля из транзакций
-    for asset, quantity in portfolio_data["quantities"].items():
-        if quantity > 0:
-            # Получение текущей цены актива
-            current_price = price_data[asset].iloc[-1] if asset in price_data.columns else 0
-            
-            # Расчет стоимости актива
-            asset_value = quantity * current_price
-            all_assets[asset] = asset_value
-            total_balance += asset_value
-    
-    # Основные показатели аккаунта
     col1, col2, col3, col4 = st.columns(4)
-    
-    # Расчет P&L за сегодня
-    today_pnl = 0
-    portfolio_24h_ago = 0
-    
-    for asset, quantity in portfolio_data["quantities"].items():
-        if quantity > 0:
-            current_price = price_data[asset].iloc[-1] if asset in price_data.columns else 0
-            price_24h_ago = price_data[asset].iloc[-2] if asset in price_data.columns and len(price_data) > 1 else current_price
-            
-            asset_value_now = quantity * current_price
-            asset_value_24h_ago = quantity * price_24h_ago
-            
-            today_pnl += (asset_value_now - asset_value_24h_ago)
-            portfolio_24h_ago += asset_value_24h_ago
-    
-    daily_pnl_percent = today_pnl / portfolio_24h_ago * 100 if portfolio_24h_ago > 0 else 0
-    
+
+    total_balance = portfolio_summary.get('total_portfolio_value', Decimal('0'))
+    today_pnl_abs = portfolio_summary.get('total_value_24h_change_abs', Decimal('0'))
+    today_pnl_pct = portfolio_summary.get('total_value_24h_change_pct', 0.0)
+    overall_pnl_abs = portfolio_summary.get('overall_pnl_absolute')
+    overall_pnl_pct = portfolio_summary.get('overall_pnl_percentage')
+    currency_symbol = portfolio_summary.get('currency_code', '$') 
+
     with col1:
-        st.metric("Общий баланс", f"${total_balance:,.2f}")
-    
+        st.metric("Общий баланс", f"{currency_symbol}{total_balance:,.2f}")
     with col2:
-        arrow = "▲" if today_pnl >= 0 else "▼"
-        color = "green" if today_pnl >= 0 else "red"
-        st.metric("P&L за сегодня", f"{arrow} ${abs(today_pnl):,.2f}", 
-                 f"{arrow} {abs(daily_pnl_percent):.2f}%",
-                 delta_color="normal" if today_pnl >= 0 else "inverse")
-    
+        arrow = "▲" if today_pnl_abs >= 0 else "▼"
+        st.metric("P&L за 24ч", 
+                  f"{arrow} {currency_symbol}{abs(today_pnl_abs):,.2f}", 
+                  f"{arrow} {abs(today_pnl_pct):.2f}%" if today_pnl_pct is not None else "N/A",
+                  delta_color="normal" if today_pnl_abs >= 0 else "inverse")
     with col3:
-        # Расчет P&L в сравнении со средней ценой покупки
-        total_invested = 0
-        for asset, quantity in portfolio_data["quantities"].items():
-            if quantity > 0:
-                avg_price = portfolio_data["avg_prices"].get(asset, 0)
-                total_invested += quantity * avg_price
-        
-        total_pnl = total_balance - total_invested
-        total_pnl_percent = total_pnl / total_invested * 100 if total_invested > 0 else 0
-        
-        arrow_total = "▲" if total_pnl >= 0 else "▼"
-        st.metric("Общий P&L", f"{arrow_total} ${abs(total_pnl):,.2f}", 
-                 f"{arrow_total} {abs(total_pnl_percent):.2f}%",
-                 delta_color="normal" if total_pnl >= 0 else "inverse")
-    
-    with col4:
-        # Маржа (для демонстрации)
-        margin_used = total_balance * 0.3  # 30% используется как маржа
-        st.metric("Используемая маржа", f"${margin_used:,.2f}", f"{margin_used/total_balance*100:.1f}%")
-    
-    # Таблица с активами
-    st.subheader("Ваши активы")
-
-    # Создаем датафрейм с активами (переделываем под новые требования)
-    assets_data = []
-    if has_assets: # Убедимся, что portfolio_data не пустое
-        for asset, quantity in portfolio_data["quantities"].items():
-            if quantity > 0:
-                # Получение текущей цены актива
-                current_price = price_data[asset].iloc[-1] if asset in price_data.columns else 0
-                # Средняя цена покупки
-                avg_buy_price = portfolio_data["avg_prices"].get(asset, 0)
-                # Стоимость покупки (инвестированная сумма)
-                invested_value = quantity * avg_buy_price
-                # Расчет изменения за 24 часа
-                price_24h_ago = price_data[asset].iloc[-2] if asset in price_data.columns and len(price_data) > 1 else current_price
-                change_24h = (current_price - price_24h_ago) / price_24h_ago * 100 if price_24h_ago > 0 else 0
-
-                assets_data.append({
-                    "Актив": asset,
-                    "Количество": quantity,
-                    "Текущая цена": current_price,
-                    "Стоимость покупки": invested_value, # Новое название столбца
-                    "Изменение 24ч (%)": change_24h
-                })
-
-    if assets_data:
-        # Сортировка по стоимости покупки (по убыванию)
-        assets_df = pd.DataFrame(assets_data)
-        assets_df = assets_df.sort_values("Стоимость покупки", ascending=False)
-
-        # Форматирование таблицы для отображения
-        formatted_df = assets_df.copy()
-        formatted_df["Количество"] = formatted_df["Количество"].apply(lambda x: f"{x:,.8f}")
-        formatted_df["Текущая цена"] = formatted_df["Текущая цена"].apply(lambda x: f"${x:,.2f}")
-        formatted_df["Стоимость покупки"] = formatted_df["Стоимость покупки"].apply(lambda x: f"${x:,.2f}")
-        formatted_df["Изменение 24ч (%)"] = formatted_df["Изменение 24ч (%)"].apply(
-            lambda x: f"**+{x:.2f}%**" if x > 0 else (f"**{x:.2f}%**" if x < 0 else "0.00%")
-        )
-
-        # Указываем столбцы для отображения в нужном порядке
-        columns_to_display = ["Актив", "Количество", "Текущая цена", "Стоимость покупки", "Изменение 24ч (%)"]
-
-        # Стилизация таблицы с использованием HTML и CSS
-        st.markdown(
-            formatted_df[columns_to_display].to_html(escape=False, index=False),
-            unsafe_allow_html=True
-        )
-    else:
-        # Если assets_data пустой (даже если has_assets=True, но все quantity=0)
-         st.info("Нет активов с положительным количеством для отображения.")
-
-
-    # График распределения активов (можно оставить как есть, использует текущую стоимость)
-    st.subheader("Распределение капитала")
-    # ... (код графика pie chart остается без изменений, он использует текущую стоимость, что логично для распределения) ...
-    # Рассчитываем данные для pie chart снова, так как assets_df мог измениться
-    if has_assets and assets_data: # Проверяем что есть данные
-        pie_chart_data = []
-        for asset, quantity in portfolio_data["quantities"].items():
-            if quantity > 0:
-                current_price = price_data[asset].iloc[-1] if asset in price_data.columns else 0
-                current_value = quantity * current_price
-                pie_chart_data.append({"Актив": asset, "Стоимость": current_value})
-        
-        if pie_chart_data:
-            pie_df = pd.DataFrame(pie_chart_data)
-            fig_pie = px.pie(
-                pie_df,
-                values="Стоимость",
-                names="Актив",
-                title="Распределение капитала по текущей стоимости"
-            )
-            st.plotly_chart(fig_pie)
+        if overall_pnl_abs is not None and overall_pnl_pct is not None:
+            arrow_total = "▲" if overall_pnl_abs >= 0 else "▼"
+            st.metric("Общий P&L", 
+                      f"{arrow_total} {currency_symbol}{abs(overall_pnl_abs):,.2f}", 
+                      f"{arrow_total} {abs(overall_pnl_pct):.2f}%",
+                      delta_color="normal" if overall_pnl_abs >= 0 else "inverse")
         else:
-            st.info("Нет данных для графика распределения капитала.")
+            st.metric("Общий P&L", "N/A", "Нет данных или покупок")
+    with col4:
+        st.metric("Доступная маржа", f"{currency_symbol}{(total_balance * Decimal('0.7')):,.2f}", "(Пример)") 
 
-    # Секция динамики стоимости портфеля
+    st.subheader("Ваши активы")
+    assets_in_portfolio = portfolio_summary.get('assets', [])
+    if assets_in_portfolio:
+        assets_df_data = []
+        for item in assets_in_portfolio:
+            assets_df_data.append({
+                "Актив": item.get('asset_ticker'),
+                "Кол-во": item.get('quantity', Decimal('0')),
+                "Цена (тек.)": item.get('current_market_price'),
+                "Стоимость (тек.)": item.get('current_value'),
+                "Цена (ср.пок.)": item.get('average_buy_price'),
+                "P&L (абс.)": item.get('pnl_absolute'),
+                "P&L (%)": item.get('pnl_percentage'),
+                "Изм. 24ч (абс.)": item.get('value_24h_change_abs'),
+                "Изм. 24ч (%)": item.get('value_24h_change_pct')
+            })
+        assets_df = pd.DataFrame(assets_df_data)
+        
+        formatted_df = assets_df.copy()
+        formatted_df["Кол-во"] = formatted_df["Кол-во"].apply(lambda x: f"{x:,.8f}" if x is not None else "-")
+        for col in ["Цена (тек.)", "Стоимость (тек.)", "Цена (ср.пок.)", "P&L (абс.)", "Изм. 24ч (абс.)"]:
+            if col in formatted_df.columns:
+                formatted_df[col] = formatted_df[col].apply(lambda x: f"{currency_symbol}{x:,.2f}" if x is not None else "-")
+        for col in ["P&L (%)", "Изм. 24ч (%)"]:
+            if col in formatted_df.columns:
+                formatted_df[col] = formatted_df[col].apply(lambda x: f"{x:.2f}%" if x is not None else "-")
+        
+        st.dataframe(formatted_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("В вашем портфеле пока нет активов.")
+
+    st.subheader("Распределение капитала")
+    if assets_in_portfolio:
+        pie_data = [{'Актив': item.get('asset_ticker'), 'Стоимость': item.get('current_value', Decimal('0'))} 
+                    for item in assets_in_portfolio if item.get('current_value', Decimal('0')) > 0]
+        if pie_data:
+            pie_df = pd.DataFrame(pie_data)
+            fig_pie = px.pie(pie_df, values="Стоимость", names="Актив", title="Распределение капитала по текущей стоимости")
+            st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.info("Нет данных для графика распределения (все активы с нулевой или отсутствующей стоимостью).")
+    else:
+        st.info("Нет активов для отображения распределения.")
+
     st.header("Динамика стоимости портфеля")
-    
-    # Получаем транзакции для определения "сегодняшней" даты
-    transactions = get_user_transactions(username)
-    if not transactions:
-        st.info("Нет транзакций для отображения динамики портфеля.")
-        return
-        
-    # Используем дату последней транзакции как "сегодня" вместо реальной системной даты
-    try:
-        transaction_dates = [pd.to_datetime(t["date"]) for t in transactions]
-        if hasattr(transaction_dates[0], 'tz') and transaction_dates[0].tz is not None:
-            transaction_dates = [d.tz_localize(None) for d in transaction_dates]
-        current_date = max(transaction_dates)  # Берем самую последнюю транзакцию как "сегодня"
-        
-        # Добавляем информацию для пользователя
-        st.caption(f"Внимание: Используется {current_date.strftime('%Y-%m-%d')} как текущая дата (дата последней транзакции).")
-    except (ValueError, IndexError):
-        current_date = datetime.now()  # Фоллбэк на случай ошибки
-    
-    # Выбор временного интервала
-    interval_options = {"7d": 7, "30d": 30, "60d": 60, "180d": 180}
-    interval_key = st.radio(
-        "Выберите интервал отображения (относительно текущей даты):",
-        options=list(interval_options.keys()),
-        horizontal=True,
-        index=3  # По умолчанию 180d
-    )
-    days_to_display = interval_options[interval_key]
-    
-    # Определение дат для расчета и отображения, используя current_date вместо datetime.now()
-    end_date = current_date
-    start_date = end_date - timedelta(days=days_to_display)
-    
-    # Расчет истории стоимости портфеля
-    portfolio_history = calculate_portfolio_value_history(
-        username,
-        price_data,
-        start_date,
-        end_date
-    )
-    
-    if not portfolio_history.empty:
-        display_start = portfolio_history['Дата'].min().strftime('%Y-%m-%d')
-        display_end = portfolio_history['Дата'].max().strftime('%Y-%m-%d')
-        st.write(f"Отображается динамика стоимости портфеля с {display_start} по {display_end} ({interval_key})")
-        
-        # Расчет метрик для выбранного периода
-        if len(portfolio_history) > 1:
-            start_value = portfolio_history['Стоимость портфеля'].iloc[0]
-            end_value = portfolio_history['Стоимость портфеля'].iloc[-1]
-            change_value = end_value - start_value
-            
-            # Расчет процентного изменения, избегая деления на ноль
-            if start_value > 0:
-                change_percent = (change_value / start_value) * 100
-            else:
-                # Если начальная стоимость 0, и конечная положительна, процент бесконечен
-                # Для отображения используем большое значение
-                change_percent = float('inf') if end_value > 0 else 0
-            
-            # Расчет годовой доходности (APY)
-            days_elapsed = (portfolio_history['Дата'].iloc[-1] - portfolio_history['Дата'].iloc[0]).days
-            if days_elapsed > 0 and start_value > 0 and end_value > 0:
-                apy = ((end_value / start_value) ** (365 / days_elapsed) - 1) * 100
-            else:
-                apy = 0
-            
-            # Отображение метрик
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                arrow = "▲" if change_value >= 0 else "▼"
-                st.metric(
-                    f"Изменение за {interval_key}",
-                    f"{arrow} ${abs(change_value):,.2f}",
-                    delta_color="normal" if change_value >= 0 else "inverse"
-                )
-            
-            with col2:
-                if start_value > 0:
-                    arrow_pct = "▲" if change_percent >= 0 else "▼"
-                    st.metric(
-                        f"Изменение (%) за {interval_key}",
-                        f"{arrow_pct} {abs(change_percent):.2f}%",
-                        delta_color="normal" if change_percent >= 0 else "inverse"
-                    )
-                else:
-                    # Если начальная стоимость была 0, показываем N/A
-                    st.metric(
-                        f"Изменение (%) за {interval_key}",
-                        "N/A (старт с 0)"
-                    )
-            
-            with col3:
-                if days_elapsed > 0 and start_value > 0:
-                    arrow_apy = "▲" if apy >= 0 else "▼"
-                    st.metric(
-                        "Годовая доходность (APY)",
-                        f"{arrow_apy} {abs(apy):.2f}%",
-                        delta_color="normal" if apy >= 0 else "inverse"
-                    )
-                else:
-                    # Если период слишком короткий или начальная стоимость 0
-                    st.metric(
-                        "Годовая доходность (APY)",
-                        "N/A"
-                    )
-        
-        # График динамики стоимости портфеля
-        fig = go.Figure()
-        
-        # Основная линия стоимости портфеля
-        fig.add_trace(
-            go.Scatter(
-                x=portfolio_history['Дата'],
-                y=portfolio_history['Стоимость портфеля'],
-                mode='lines',
-                name='Стоимость портфеля',
-                line=dict(color='blue', width=2),
-                fill='tozeroy'  # Заливка до оси X
+    interval_options = {"7д": 7, "30д": 30, "90д": 90, "180д": 180, "1г": 365, "Все": 3650}
+    selected_interval_key = st.radio("Интервал:", list(interval_options.keys()), index=2, horizontal=True, key="ad_interval_radio")
+    days_to_look_back = interval_options[selected_interval_key]
+
+    if st.session_state.ad_last_interval_key != selected_interval_key or st.session_state.ad_value_history_df.empty:
+        with st.spinner("Загрузка истории стоимости портфеля..."):
+            df_hist, hist_start, hist_end, hist_curr = fetch_portfolio_value_history_api(
+                backend_api_url, auth_headers, lookback_days=days_to_look_back
             )
-        )
-        
-        # Добавление отметок для дат транзакций (используем все транзакции, т.к. мы уже их получили)
-        if transactions:
-            # Фильтруем только транзакции в диапазоне отображения
-            start_date_norm = pd.Timestamp(start_date).normalize()
-            end_date_norm = pd.Timestamp(end_date).normalize()
+            st.session_state.ad_value_history_df = df_hist
+            st.session_state.ad_history_start_date = hist_start
+            st.session_state.ad_history_end_date = hist_end
+            st.session_state.ad_history_currency = hist_curr or currency_symbol 
+            st.session_state.ad_last_interval_key = selected_interval_key
+
+    portfolio_history_df = st.session_state.ad_value_history_df
+    hist_start_str = st.session_state.ad_history_start_date
+    hist_end_str = st.session_state.ad_history_end_date
+    hist_currency = st.session_state.ad_history_currency
+
+    if not portfolio_history_df.empty:
+        display_start = pd.to_datetime(hist_start_str).strftime('%Y-%m-%d') if hist_start_str else "N/A"
+        display_end = pd.to_datetime(hist_end_str).strftime('%Y-%m-%d') if hist_end_str else "N/A"
+        st.write(f"Отображается динамика стоимости портфеля ({hist_currency}) с {display_start} по {display_end}.")
+
+        if len(portfolio_history_df) > 1:
+            start_val = portfolio_history_df['value'].iloc[0]
+            end_val = portfolio_history_df['value'].iloc[-1]
+            change_val = end_val - start_val
+            change_pct = (change_val / start_val * 100) if start_val != 0 else (Decimal('inf') if end_val > 0 else Decimal('0'))
             
-            # Конвертируем даты транзакций в формат без таймзоны
-            transaction_dates_for_filter = []
-            for t in transactions:
-                t_date = pd.to_datetime(t["date"])
-                if hasattr(t_date, 'tz') and t_date.tz is not None:
-                    t_date = t_date.tz_localize(None)
-                transaction_dates_for_filter.append(t_date)
-            
-            # Находим транзакции в диапазоне дат
-            in_range_txns = [(i, t) for i, (t, t_date) in enumerate(zip(transactions, transaction_dates_for_filter)) 
-                            if start_date_norm <= t_date <= end_date_norm]
-            
-            if in_range_txns:
-                # Создаем словарь для группировки транзакций по датам
-                txn_by_date = {}
-                for i, t in in_range_txns:
-                    txn_date = pd.to_datetime(t['date'])
-                    if hasattr(txn_date, 'tz') and txn_date.tz is not None:
-                        txn_date = txn_date.tz_localize(None)
-                    txn_date = txn_date.normalize()
-                    
-                    if txn_date not in txn_by_date:
-                        txn_by_date[txn_date] = []
-                    txn_by_date[txn_date].append((i, t))
-                
-                # Для каждой даты с транзакциями добавляем маркер
-                for txn_date, txns in txn_by_date.items():
-                    # Находим значение для этой даты в истории
-                    matching_rows = portfolio_history[portfolio_history['Дата'] == txn_date]
-                    if not matching_rows.empty:
-                        value = matching_rows['Стоимость портфеля'].iloc[0]
-                        
-                        # Создаем описание всех транзакций в этот день
-                        desc = "<br>".join([
-                            f"{t['type']} {t['asset']}: {t['quantity']} по ${float(t['price']):.2f}" 
-                            for i, t in txns
-                        ])
-                        
-                        # Добавляем маркер транзакции
-                        fig.add_trace(
-                            go.Scatter(
-                                x=[txn_date],
-                                y=[value],
-                                mode='markers',
-                                marker=dict(
-                                    size=10,
-                                    color='red', 
-                                    symbol='circle'
-                                ),
-                                name=f'Транзакции {txn_date.strftime("%Y-%m-%d")}',
-                                text=desc,
-                                hoverinfo='text+y'
-                            )
-                        )
-         
-        # Настройка макета графика
-        fig.update_layout(
-            height=500,
-            title_text=f"Динамика стоимости портфеля ({interval_key})",
-            xaxis_title="Дата",
-            yaxis_title="Стоимость портфеля (USD)",
-            hovermode="x unified",
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            )
-        )
-        
-        # Отображение графика
-        st.plotly_chart(fig, use_container_width=True)
+            days_num = (pd.to_datetime(hist_end_str) - pd.to_datetime(hist_start_str)).days if hist_start_str and hist_end_str else 0
+            apy_pct = Decimal('0')
+            if days_num > 0 and start_val != 0: # Проверяем start_val != 0
+                try: 
+                    apy_pct = ((end_val / start_val) ** (Decimal('365.0') / Decimal(days_num)) - 1) * 100
+                except Exception: # Ловим более общие исключения для Decimal
+                    pass
+
+            m_col1, m_col2, m_col3 = st.columns(3)
+            m_col1.metric("Изм. за период", f"{'▲' if change_val >=0 else '▼'} {hist_currency}{abs(change_val):.2f}")
+            m_col2.metric("Изм. (%) за период", f"{'▲' if change_pct >=0 else '▼'} {abs(change_pct):.2f}%" if start_val != 0 else "N/A")
+            m_col3.metric("APY", f"{'▲' if apy_pct >=0 else '▼'} {abs(apy_pct):.2f}%" if days_num > 0 and start_val != 0 else "N/A")
+
+        fig_hist = px.line(portfolio_history_df, x='date', y='value', title=f"Динамика стоимости ({hist_currency})", markers=True)
+        fig_hist.update_layout(xaxis_title="Дата", yaxis_title=f"Стоимость ({hist_currency})")
+        st.plotly_chart(fig_hist, use_container_width=True)
     else:
         st.warning("Нет данных для отображения истории стоимости портфеля.")
-    
-    # Пояснение для пользователя
-    st.info("""
-    График показывает, как менялась общая стоимость вашего портфеля с течением времени.
-    • До первой покупки стоимость портфеля равна 0.
-    • При покупке актива стоимость увеличивается на сумму покупки.
-    • При продаже актива стоимость уменьшается на сумму продажи.
-    • Между транзакциями стоимость меняется из-за колебаний цен активов.
-    • Красные точки отмечают даты проведения транзакций.
-    """)
-    
-    # Добавление кнопки для управления активами
-    st.info("Чтобы изменить состав портфеля, перейдите в раздел 'Управление активами'")
-    if st.button("Перейти к управлению активами"):
-        st.session_state.active_page = "Управление активами"
-        st.rerun()
 
-def render_about():
-    """Отображение страницы 'About'"""
-    st.header("About")
-    
-    st.markdown("""
-    ## Development of a System for Monitoring and Optimization of Investment Portfolios
-    
-    This application provides tools for monitoring and optimizing investment portfolios using various algorithms:
-    
-    ### Features:
-    
-    - **Dashboard**: Overview of portfolio performance and asset allocation
-    - **Portfolio Optimization**: Optimize your portfolio using the Markowitz model
-    - **Model Training**: Train new models or select from pretrained models
-    - **Model Comparison**: Compare performance of different portfolio optimization models
-    - **Backtest Results**: Analyze historical performance of different strategies
-    
-    ### Optimization Models:
-    
-    1. **Markowitz Model**: Traditional mean-variance optimization
-    2. **Reinforcement Learning Models**:
-       - A2C (Advantage Actor-Critic)
-       - PPO (Proximal Policy Optimization)
-       - DDPG (Deep Deterministic Policy Gradient)
-       - SAC (Soft Actor-Critic)
-    
-    ### Data:
-    
-    The system uses historical cryptocurrency price data from Binance, including:
-    - BNBUSDT, BTCUSDT, CAKEUSDT, ETHUSDT, LTCUSDT, SOLUSDT, STRKUSDT, TONUSDT, USDCUSDT, XRPUSDT, PEPEUSDT, HBARUSDT, APTUSDT, LDOUSDT, JUPUSDT
-    
-    ### Implementation:
-    
-    The system is developed using Python with the following key libraries:
-    - Streamlit for the web application
-    - Pandas and NumPy for data processing
-    - Matplotlib and Plotly for visualization
-    - SciPy for optimization algorithms
-    - FinRL for reinforcement learning models
-    """)
+    st.info("Для изменения состава портфеля, перейдите в раздел 'Управление транзакциями'.")
+    if st.button("Перейти к управлению транзакциями", key="goto_tm_from_ad_bottom"):
+        st.warning("Пожалуйста, перейдите на страницу 'Управление активами' через боковое меню.") 
 
-def render_transactions_manager(username, price_data, assets):
-    """Отображение страницы управления транзакциями в стиле CoinMarketCap"""
-    st.header("Управление активами и транзакциями")
+def render_transactions_manager(username: str, available_assets: list, backend_api_url: str, auth_headers: dict):
+    st.header("Управление транзакциями")
+    st.info("Здесь вы можете добавлять, просматривать и удалять транзакции.")
+
+    if 'tm_transactions_list' not in st.session_state: st.session_state.tm_transactions_list = []
+    if 'tm_force_reload_transactions' not in st.session_state: st.session_state.tm_force_reload_transactions = True
+    if 'tm_error_message' not in st.session_state: st.session_state.tm_error_message = None
+    if 'tm_success_message' not in st.session_state: st.session_state.tm_success_message = None
+
+    if st.session_state.tm_force_reload_transactions:
+        with st.spinner("Загрузка списка транзакций..."):
+            st.session_state.tm_transactions_list = fetch_transactions_api(backend_api_url, auth_headers)
+            st.session_state.tm_force_reload_transactions = False
+            # Сбрасываем сообщения после перезагрузки
+            st.session_state.tm_error_message = None
+            st.session_state.tm_success_message = None
     
-    # Получение текущих транзакций пользователя
-    transactions = get_user_transactions(username)
-    
-    # Получение текущего портфеля с количествами
-    portfolio_data = get_portfolio_with_quantities(username)
-    
-    # Вкладки для разных функций
-    tabs = st.tabs(["Мой портфель", "Добавить транзакцию", "История транзакций"])
-    
-    # Вкладка "Мой портфель"
-    with tabs[0]:
-        st.subheader("Текущий портфель")
-        
-        if not portfolio_data or not any(portfolio_data["quantities"].values()):
-            st.info("У вас пока нет активов в портфеле. Добавьте транзакции, чтобы сформировать портфель.")
-        else:
-            # Создание DataFrame для отображения портфеля
-            portfolio_items = []
-            
-            total_portfolio_value = 0
-            total_profit_loss = 0
-            
-            for asset, quantity in portfolio_data["quantities"].items():
-                if quantity > 0:
-                    # Получение текущей цены актива
-                    current_price = price_data[asset].iloc[-1] if asset in price_data.columns else 0
-                    
-                    # Средняя цена покупки
-                    avg_buy_price = portfolio_data["avg_prices"].get(asset, 0)
-                    
-                    # Расчет текущей стоимости и прибыли/убытка
-                    current_value = quantity * current_price
-                    invested_value = quantity * avg_buy_price
-                    profit_loss = current_value - invested_value
-                    profit_loss_percent = (profit_loss / invested_value * 100) if invested_value > 0 else 0
-                    
-                    total_portfolio_value += current_value
-                    total_profit_loss += profit_loss
-                    
-                    # Расчет изменения за 24 часа
-                    price_24h_ago = price_data[asset].iloc[-2] if asset in price_data.columns and len(price_data) > 1 else current_price
-                    change_24h = (current_price - price_24h_ago) / price_24h_ago * 100 if price_24h_ago > 0 else 0
-                    
-                    portfolio_items.append({
-                        "Актив": asset,
-                        "Количество": quantity,
-                        "Средняя цена покупки": avg_buy_price,
-                        "Текущая цена": current_price,
-                        "Текущая стоимость": current_value,
-                        "Изменение 24ч (%)": change_24h,
-                        "P&L": profit_loss,
-                        "P&L (%)": profit_loss_percent
-                    })
-            
-            # Отображение общей информации о портфеле
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric("Общая стоимость портфеля", f"${total_portfolio_value:,.2f}")
-            
-            with col2:
-                # Знак для P&L
-                if total_profit_loss >= 0:
-                    st.metric("Общий P&L", f"${total_profit_loss:,.2f}", delta=f"{total_profit_loss/total_portfolio_value*100:.2f}%")
-                else:
-                    st.metric("Общий P&L", f"-${abs(total_profit_loss):,.2f}", delta=f"{total_profit_loss/total_portfolio_value*100:.2f}%", delta_color="inverse")
-            
-            with col3:
-                # Получение общего изменения стоимости за 24 часа
-                portfolio_24h_ago = 0
-                for item in portfolio_items:
-                    asset = item["Актив"]
-                    quantity = item["Количество"]
-                    price_24h_ago = price_data[asset].iloc[-2] if asset in price_data.columns and len(price_data) > 1 else item["Текущая цена"]
-                    portfolio_24h_ago += quantity * price_24h_ago
-                
-                change_24h = (total_portfolio_value - portfolio_24h_ago) / portfolio_24h_ago * 100 if portfolio_24h_ago > 0 else 0
-                
-                st.metric("Изменение за 24ч", 
-                         f"${total_portfolio_value - portfolio_24h_ago:,.2f}", 
-                         delta=f"{change_24h:.2f}%",
-                         delta_color="normal" if change_24h >= 0 else "inverse")
-            
-            # Создание DataFrame из данных портфеля
-            portfolio_df = pd.DataFrame(portfolio_items)
-            
-            # Отображение таблицы активов
-            if not portfolio_df.empty:
-                # Сортировка по текущей стоимости (по убыванию)
-                portfolio_df = portfolio_df.sort_values("Текущая стоимость", ascending=False)
-                
-                # Форматирование значений для отображения
-                formatted_df = portfolio_df.copy()
-                formatted_df["Средняя цена покупки"] = formatted_df["Средняя цена покупки"].apply(lambda x: f"${x:,.2f}")
-                formatted_df["Текущая цена"] = formatted_df["Текущая цена"].apply(lambda x: f"${x:,.2f}")
-                formatted_df["Текущая стоимость"] = formatted_df["Текущая стоимость"].apply(lambda x: f"${x:,.2f}")
-                formatted_df["Изменение 24ч (%)"] = formatted_df["Изменение 24ч (%)"].apply(
-                    lambda x: f"+{x:.2f}%" if x > 0 else (f"{x:.2f}%" if x < 0 else "0.00%")
-                )
-                formatted_df["P&L"] = formatted_df["P&L"].apply(
-                    lambda x: f"${x:,.2f}" if x >= 0 else f"-${abs(x):,.2f}"
-                )
-                formatted_df["P&L (%)"] = formatted_df["P&L (%)"].apply(
-                    lambda x: f"+{x:.2f}%" if x > 0 else (f"{x:.2f}%" if x < 0 else "0.00%")
-                )
-                
-                # Отображение таблицы
-                st.dataframe(formatted_df, use_container_width=True)
-                
-                # График распределения активов по стоимости
-                st.subheader("Распределение портфеля")
-                fig = px.pie(
-                    portfolio_df,
-                    values="Текущая стоимость",
-                    names="Актив",
-                    title="Распределение портфеля по текущей стоимости"
-                )
-                st.plotly_chart(fig, use_container_width=True)
-    
-    # Вкладка "Добавить транзакцию"
-    with tabs[1]:
+    transactions = st.session_state.tm_transactions_list
+
+    # Отображение сообщений об успехе/ошибке
+    if st.session_state.tm_success_message:
+        st.success(st.session_state.tm_success_message)
+        st.session_state.tm_success_message = None # Очищаем после показа
+    if st.session_state.tm_error_message:
+        st.error(st.session_state.tm_error_message)
+        st.session_state.tm_error_message = None # Очищаем после показа
+
+    tab1, tab2 = st.tabs(["Добавить транзакцию", "Список транзакций и удаление"])
+
+    with tab1:
         st.subheader("Добавить новую транзакцию")
-
-        # Инициализация флага сброса формы
-        if 'transaction_submitted_successfully' not in st.session_state: st.session_state.transaction_submitted_successfully = False
-
-        # Проверка и выполнение сброса, если флаг установлен
-        if st.session_state.transaction_submitted_successfully:
-            st.session_state.transaction_quantity = 1.0
-            st.session_state.transaction_price = 0.0 # Будет обновлено до текущей цены при инициализации
-            st.session_state.transaction_volume_usdt = 0.0
-            st.session_state.transaction_fee = 0.0
-            st.session_state.transaction_total_cost = 0.0
-            st.session_state.transaction_note = "" # Также сбрасываем примечание
-            st.session_state.last_changed = None
-            # st.session_state.transaction_asset = assets[0] if assets else None # Не сбрасываем актив и тип
-            # st.session_state.transaction_type = "buy"
-            st.session_state.transaction_submitted_successfully = False # Сбрасываем сам флаг
-
-        # Инициализация состояния для полей ввода, если они еще не существуют (или после сброса)
-        if 'transaction_asset' not in st.session_state: st.session_state.transaction_asset = assets[0] if assets else None
-        if 'transaction_type' not in st.session_state: st.session_state.transaction_type = "buy"
-        if 'transaction_quantity' not in st.session_state: st.session_state.transaction_quantity = 1.0
-        if 'transaction_price' not in st.session_state: st.session_state.transaction_price = 0.0
-        if 'transaction_volume_usdt' not in st.session_state: st.session_state.transaction_volume_usdt = 0.0
-        if 'transaction_fee' not in st.session_state: st.session_state.transaction_fee = 0.0
-        if 'transaction_total_cost' not in st.session_state: st.session_state.transaction_total_cost = 0.0
-        if 'current_asset_price' not in st.session_state: st.session_state.current_asset_price = 0.0
-        if 'last_changed' not in st.session_state: st.session_state.last_changed = None 
-        if 'transaction_note' not in st.session_state: st.session_state.transaction_note = "" # Инициализация состояния для примечания
-
-        # --- Функции обратного вызова для динамического обновления --- 
-        def update_calculations(changed_field):
-            st.session_state.last_changed = changed_field
-            price = st.session_state.transaction_price
-            quantity = st.session_state.transaction_quantity
-            volume = st.session_state.transaction_volume_usdt
-            fee = st.session_state.transaction_fee
-            type = st.session_state.transaction_type
-
-            if changed_field == 'asset' or changed_field == 'init':
-                asset = st.session_state.transaction_asset
-                current_price = price_data[asset].iloc[-1] if asset and asset in price_data.columns else 0
-                st.session_state.current_asset_price = current_price
-                # Если цена не была установлена вручную, обновляем ее до текущей
-                if st.session_state.transaction_price == 0.0 or st.session_state.last_changed == 'asset': 
-                    st.session_state.transaction_price = current_price
-                    price = current_price
-                # Пересчитываем все на основе новой цены/актива
-                if st.session_state.last_changed == 'quantity': # Если количество было введено последним
-                    st.session_state.transaction_volume_usdt = quantity * price
-                elif st.session_state.last_changed == 'volume': # Если объем был введен последним
-                    st.session_state.transaction_quantity = volume / price if price > 0 else 0
-                else: # По умолчанию считаем объем от количества
-                    st.session_state.transaction_volume_usdt = quantity * price
-
-            elif changed_field == 'quantity':
-                st.session_state.transaction_volume_usdt = quantity * price
-
-            elif changed_field == 'price':
-                # Пересчитываем в зависимости от того, что было введено последним
-                if st.session_state.last_changed == 'quantity' or st.session_state.last_changed is None:
-                    st.session_state.transaction_volume_usdt = quantity * price
-                elif st.session_state.last_changed == 'volume':
-                    st.session_state.transaction_quantity = volume / price if price > 0 else 0
-                else: # По умолчанию обновляем объем
-                     st.session_state.transaction_volume_usdt = quantity * price
-
-            elif changed_field == 'volume':
-                st.session_state.transaction_quantity = volume / price if price > 0 else 0
-            
-            # Обновляем итоговую стоимость после всех пересчетов
-            quantity = st.session_state.transaction_quantity # Перечитываем на случай изменения
-            price = st.session_state.transaction_price      # Перечитываем на случай изменения
-            fee = st.session_state.transaction_fee
-            type = st.session_state.transaction_type
-            st.session_state.transaction_total_cost = quantity * price + fee if type == "buy" else quantity * price - fee
         
-        # Инициализация при первой загрузке или смене актива
-        if st.session_state.transaction_asset and st.session_state.transaction_price == 0.0:
-             update_calculations('init')
-
-        # --- Виджеты вне формы для динамического обновления --- 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.selectbox(
-                "Выберите актив",
-                options=assets,
-                key='transaction_asset',
-                on_change=update_calculations, 
-                args=('asset',)
+        with st.form("add_transaction_form_api", clear_on_submit=True):
+            asset_ticker = st.selectbox(
+                "Актив", 
+                options=available_assets if available_assets else ["Загрузка списка активов..."], # Используем available_assets из auth_app
+                help="Выберите актив из списка доступных."
             )
-        with col2:
-            st.radio(
-                "Тип операции",
+            transaction_type = st.selectbox(
+                "Тип транзакции", 
                 options=["buy", "sell"],
                 format_func=lambda x: "Покупка" if x == "buy" else "Продажа",
-                key='transaction_type',
-                horizontal=True,
-                on_change=update_calculations, 
-                args=('type',)
+                help="Выберите тип операции: покупка или продажа."
             )
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.number_input(
-                "Количество",
-                min_value=0.0,
-                key='transaction_quantity',
-                step=0.000001,
+            quantity_val = st.number_input( # Изменено имя переменной
+                "Количество", 
+                min_value=0.00000001, 
+                value=1.0, 
+                step=0.00000001, 
                 format="%.8f",
-                on_change=update_calculations, 
-                args=('quantity',)
+                help="Количество актива в транзакции."
             )
-        with col2:
-             st.number_input(
-                f"Цена за единицу (Текущая: ${st.session_state.current_asset_price:,.4f})",
-                min_value=0.0,
-                key='transaction_price',
-                step=0.01,
-                format="%.4f",
-                on_change=update_calculations, 
-                args=('price',)
+            price_val = st.number_input( # Изменено имя переменной
+                "Цена за единицу", 
+                min_value=0.00000001, 
+                value=100.0, 
+                step=0.00000001, 
+                format="%.8f",
+                help="Цена актива за одну единицу в валюте портфеля."
             )
-        with col3:
-             st.number_input(
-                "Объем ордера (USDT)",
-                min_value=0.0,
-                key='transaction_volume_usdt',
-                step=1.0,
-                format="%.2f",
-                on_change=update_calculations, 
-                args=('volume',)
+            transaction_date_val = st.date_input( # Изменено имя переменной
+                "Дата транзакции", 
+                value=datetime.now().date(),
+                help="Дата совершения транзакции."
             )
+            # transaction_time = st.time_input("Время транзакции", value=datetime.now().time())
+            fee_val = st.number_input("Комиссия", min_value=0.0, value=0.0, step=0.01, format="%.2f", help="Сумма комиссии за транзакцию.")
+            notes = st.text_area("Примечания", help="Дополнительные заметки по транзакции.")
 
-        col1, col2 = st.columns([1, 2]) # Колонка для комиссии и итоговой стоимости
-        with col1:
-             st.number_input(
-                "Комиссия (USDT)",
-                min_value=0.0,
-                key='transaction_fee',
-                step=0.01,
-                format="%.2f",
-                on_change=update_calculations, 
-                args=('fee',)
-            )
-        with col2:
-             # Отображение динамически обновляемой общей стоимости
-            st.metric("Рассчитанная общая стоимость", f"${st.session_state.transaction_total_cost:,.2f}")
+            submitted = st.form_submit_button("Добавить транзакцию")
 
-
-        # --- Форма для ввода даты, времени, примечания и кнопки --- 
-        with st.form("add_transaction_form_details"):
-            st.write("**Детали транзакции:**")
-            # Дата и время транзакции
-            col1, col2 = st.columns(2)
-            with col1:
-                transaction_date = st.date_input(
-                    "Дата транзакции",
-                    value=datetime.now().date()
-                )
-            with col2:
-                transaction_time = st.time_input(
-                    "Время транзакции",
-                    value=datetime.now().time()
-                )
-            
-            # Примечание к транзакции
-            note = st.text_area(
-                "Примечание",
-                placeholder="Добавьте описание или комментарий к транзакции",
-                key='transaction_note' # Добавляем ключ для сохранения состояния при ошибках валидации
-            )
-            
-            # Кнопка отправки формы
-            submit_button = st.form_submit_button("Добавить транзакцию")
-            
-            if submit_button:
-                # Получаем значения из session_state
-                asset = st.session_state.transaction_asset
-                transaction_type = st.session_state.transaction_type
-                quantity = st.session_state.transaction_quantity
-                price = st.session_state.transaction_price
-                fee = st.session_state.transaction_fee
-
-                # Объединение даты и времени
-                transaction_datetime = datetime.combine(transaction_date, transaction_time)
-
-                # Проверка валидности данных
-                if not asset:
-                     st.error("Пожалуйста, выберите актив.")
-                elif quantity <= 0:
-                    st.error("Количество должно быть больше нуля")
-                elif price <= 0:
-                    st.error("Цена должна быть больше нуля")
+            if submitted:
+                if not asset_ticker or asset_ticker == "Загрузка списка активов...":
+                    st.session_state.tm_error_message = "Пожалуйста, выберите актив."
+                elif quantity_val <= 0 or price_val <= 0:
+                    st.session_state.tm_error_message = "Количество и цена должны быть положительными."
                 else:
-                    # Создание данных транзакции
-                    transaction_data = {
-                        "asset": asset,
-                        "type": transaction_type,
-                        "quantity": quantity,
-                        "price": price,
-                        "fee": fee,
-                        "date": transaction_datetime.strftime("%Y-%m-%d %H:%M:%S"),
-                        "note": note
+                    payload = {
+                        "asset_ticker": asset_ticker,
+                        "transaction_type": transaction_type,
+                        "quantity": str(quantity_val), # API ожидает Decimal, передаем как строку
+                        "price": str(price_val),       # API ожидает Decimal, передаем как строку
+                        "transaction_date": transaction_date_val.isoformat(), # Только дата
+                        "fee": str(fee_val),           # API ожидает Decimal, передаем как строку
+                        "notes": notes
                     }
+                    try:
+                        with st.spinner("Отправка транзакции..."):
+                            response = requests.post(
+                                f"{backend_api_url}/portfolios/me/transactions", 
+                                headers=auth_headers, 
+                                json=payload
+                            )
+                            response.raise_for_status()
+                            st.session_state.tm_success_message = "Транзакция успешно добавлена!"
+                            st.session_state.tm_force_reload_transactions = True # Флаг для перезагрузки списка
+                            # Очистка полей формы происходит автоматически из-за clear_on_submit=True
+                    except requests.exceptions.HTTPError as http_err:
+                        try:
+                            error_detail = http_err.response.json().get("detail", http_err.response.text)
+                        except: # requests.exceptions.JSONDecodeError or other
+                            error_detail = http_err.response.text
+                        st.session_state.tm_error_message = f"Ошибка добавления транзакции (HTTP {http_err.response.status_code}): {error_detail}"
+                    except requests.exceptions.RequestException as req_err:
+                        st.session_state.tm_error_message = f"Ошибка соединения: {req_err}"
+                    except Exception as e:
+                        st.session_state.tm_error_message = f"Непредвиденная ошибка: {e}"
+                        traceback.print_exc()
+                st.rerun() # Перезапускаем, чтобы обновить сообщения и список, если нужно
+
+    with tab2:
+        st.subheader("Список транзакций")
+        if st.button("🔄 Обновить список транзакций", key="reload_transactions_tab2"):
+            st.session_state.tm_force_reload_transactions = True
+            st.rerun()
+
+        if transactions:
+            # Конвертация для отображения, включая корректную обработку Decimal из API
+            df_transactions = pd.DataFrame(transactions)
+            
+            # Преобразование полей для отображения
+            df_display = df_transactions.copy()
+            if 'transaction_date' in df_display.columns:
+                 df_display['Дата'] = pd.to_datetime(df_display['transaction_date']).dt.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                 df_display['Дата'] = "N/A"
+
+            df_display['Актив'] = df_display['asset_ticker']
+            df_display['Тип'] = df_display['transaction_type'].apply(lambda x: 'Покупка' if x == 'buy' else ('Продажа' if x == 'sell' else x))
+            
+            # Используем .get() с преобразованием в Decimal, затем в float для форматирования
+            df_display['Количество'] = df_display['quantity'].apply(lambda x: f"{float(x):.8f}" if x is not None else "N/A")
+            df_display['Цена'] = df_display['price'].apply(lambda x: f"${float(x):.2f}" if x is not None else "N/A")
+            df_display['Комиссия'] = df_display['fee'].apply(lambda x: f"${float(x):.2f}" if x is not None else "N/A")
+            df_display['Примечания'] = df_display['notes']
+            df_display['ID'] = df_display['id']
+
+            st.dataframe(
+                df_display[['ID', 'Дата', 'Актив', 'Тип', 'Количество', 'Цена', 'Комиссия', 'Примечания']],
+                use_container_width=True,
+                hide_index=True
+            )
+
+            # --- Функционал удаления транзакций ---
+            st.subheader("Удалить транзакцию")
+            if not df_transactions.empty: # Убедимся, что есть транзакции для удаления
+                transaction_ids = df_transactions["id"].tolist()
+                
+                # Формируем читаемые опции для selectbox
+                # transaction_options = {
+                #     f"ID: {tx['id']} - {tx.get('transaction_date','N/A')} - {tx['asset_ticker']} - {tx['transaction_type']} - Q:{tx['quantity']} P:{tx['price']}": tx['id'] 
+                #     for tx in transactions # Используем оригинальный список transactions
+                # }
+
+                # Более простой вариант для отображения ID
+                transaction_options_display = [f"ID: {tid}" for tid in transaction_ids]
+
+
+                selected_display_option = st.selectbox(
+                    "Выберите транзакцию для удаления:",
+                    options=[""] + transaction_options_display, # Добавляем пустой вариант для "не выбрано"
+                    index=0
+                )
+
+                if selected_display_option:
+                    selected_tx_id = int(selected_display_option.split(": ")[1]) # Извлекаем ID
                     
-                    # Добавление транзакции
-                    success, message = add_transaction(username, transaction_data)
-                    
-                    if success:
-                        st.success(message)
-                        # Устанавливаем флаг для сброса формы при следующем rerun
-                        st.session_state.transaction_submitted_successfully = True
-                        # Убираем прямой сброс состояния отсюда
-                        st.rerun() # Перезагрузить чтобы очистить поля и обновить историю
-                    else:
-                        st.error(message)
-    
-    # Вкладка "История транзакций"
-    with tabs[2]:
-        st.subheader("История транзакций")
-        
-        if not transactions:
-            st.info("У вас пока нет транзакций")
+                    st.warning(f"Вы уверены, что хотите удалить транзакцию с ID: {selected_tx_id}?")
+                    if st.button("Удалить выбранную транзакцию", key=f"delete_tx_{selected_tx_id}"):
+                        try:
+                            with st.spinner(f"Удаление транзакции {selected_tx_id}..."):
+                                delete_response = requests.delete(
+                                    f"{backend_api_url}/portfolios/me/transactions/{selected_tx_id}",
+                                    headers=auth_headers
+                                )
+                                delete_response.raise_for_status()
+                                st.session_state.tm_success_message = f"Транзакция ID {selected_tx_id} успешно удалена."
+                                st.session_state.tm_force_reload_transactions = True
+                        except requests.exceptions.HTTPError as http_err:
+                            try:
+                                error_detail = http_err.response.json().get("detail", http_err.response.text)
+                            except:
+                                error_detail = http_err.response.text
+                            st.session_state.tm_error_message = f"Ошибка удаления (HTTP {http_err.response.status_code}): {error_detail}"
+                        except requests.exceptions.RequestException as req_err:
+                            st.session_state.tm_error_message = f"Ошибка соединения: {req_err}"
+                        except Exception as e:
+                            st.session_state.tm_error_message = f"Непредвиденная ошибка: {e}"
+                            traceback.print_exc()
+                        st.rerun() # Перезапуск для обновления списка и сообщений
+            else:
+                st.info("Нет транзакций для удаления.")
         else:
-            # Создание DataFrame для отображения истории транзакций
-            transactions_df = pd.DataFrame(transactions)
-            
-            # Приведение столбца даты к datetime
-            transactions_df["date"] = pd.to_datetime(transactions_df["date"])
-            
-            # Сортировка по дате (новые сверху)
-            transactions_df = transactions_df.sort_values("date", ascending=False)
-            
-            # Форматирование данных для отображения
-            formatted_transactions = transactions_df.copy()
-            formatted_transactions["type"] = formatted_transactions["type"].apply(
-                lambda x: "Покупка" if x == "buy" else "Продажа"
-            )
-            formatted_transactions["quantity"] = formatted_transactions["quantity"].apply(
-                lambda x: f"{x:,.8f}"
-            )
-            formatted_transactions["price"] = formatted_transactions["price"].apply(
-                lambda x: f"${x:,.2f}"
-            )
-            formatted_transactions["fee"] = formatted_transactions["fee"].apply(
-                lambda x: f"${x:,.2f}"
-            )
-            
-            # Расчет общей стоимости транзакции
-            formatted_transactions["total"] = [
-                f"${row['quantity'] * row['price'] + row['fee']:,.2f}" if row["type"] == "buy" 
-                else f"${row['quantity'] * row['price'] - row['fee']:,.2f}"
-                for _, row in transactions_df.iterrows()
-            ]
-            
-            # Переименование столбцов для отображения
-            display_columns = {
-                "id": "ID",
-                "date": "Дата",
-                "type": "Тип",
-                "asset": "Актив",
-                "quantity": "Количество",
-                "price": "Цена",
-                "fee": "Комиссия",
-                "total": "Общая стоимость",
-                "note": "Примечание"
-            }
-            
-            formatted_transactions = formatted_transactions.rename(columns=display_columns)
-            
-            # Отображение таблицы транзакций
-            st.dataframe(formatted_transactions[list(display_columns.values())], use_container_width=True)
-            
-            # Фильтр транзакций
-            st.subheader("Фильтр транзакций")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Фильтр по типу транзакции
-                transaction_type_filter = st.multiselect(
-                    "Тип транзакции",
-                    options=["Покупка", "Продажа"],
-                    default=["Покупка", "Продажа"]
-                )
-            
-            with col2:
-                # Фильтр по активу
-                available_assets = transactions_df["asset"].unique().tolist()
-                asset_filter = st.multiselect(
-                    "Активы",
-                    options=available_assets,
-                    default=available_assets
-                )
-            
-            # Применение фильтров
-            filtered_transactions = formatted_transactions.copy()
-            
-            if transaction_type_filter:
-                filtered_transactions = filtered_transactions[filtered_transactions["Тип"].isin(transaction_type_filter)]
-            
-            if asset_filter:
-                filtered_transactions = filtered_transactions[filtered_transactions["Актив"].isin(asset_filter)]
-            
-            # Отображение отфильтрованных транзакций
-            if not filtered_transactions.empty:
-                st.subheader("Отфильтрованные транзакции")
-                st.dataframe(filtered_transactions, use_container_width=True)
-                
-                # Удаление транзакции
-                st.subheader("Удаление транзакции")
-                
-                transaction_to_delete = st.number_input(
-                    "Введите ID транзакции для удаления",
-                    min_value=1,
-                    max_value=max(transactions_df["id"]) if not transactions_df.empty else 1,
-                    step=1
-                )
-                
-                # Проверка существования транзакции
-                transaction_exists = any(t["id"] == transaction_to_delete for t in transactions)
-                
-                if not transaction_exists:
-                    st.error(f"Транзакция с ID {transaction_to_delete} не найдена")
-                else:
-                    # Сначала отображаем чекбокс подтверждения
-                    confirm_delete = st.checkbox(f"Я подтверждаю удаление транзакции №{transaction_to_delete}")
-                    
-                    # Кнопка удаления активна только после подтверждения
-                    if confirm_delete:
-                        if st.button("Подтвердить удаление"):
-                            success, message = delete_transaction(username, transaction_to_delete)
-                            
-                            if success:
-                                st.success(message)
-                                st.info("Обновите страницу, чтобы увидеть изменения")
-                            else:
-                                st.error(message)
+            st.info("Список транзакций пуст.")
+
+def render_about():
+    st.title("О проекте")
+    st.markdown("""
+    ### Система Оптимизации и Мониторинга Финансовых Портфелей "ProInvest"
+    
+    **Версия:** 0.7.0 (Интеграция API, Docker, RabbitMQ)
+
+    **Назначение:**
+    Данная система разработана в рамках выпускной квалификационной работы (ВКР) и предназначена для помощи частным инвесторам и финансовым аналитикам в:
+    - Управлении и отслеживании своих инвестиционных портфелей.
+    - Проведении анализа эффективности портфелей на исторических данных (бэктестинг).
+    - Получении рекомендаций по ребалансировке портфелей на основе современных моделей (Markowitz, DRL).
+    - Анализе новостного фона по отдельным активам с использованием NLP-моделей.
+    - Моделировании гипотетических портфельных стратегий.
+
+    **Ключевые технологии:**
+    - **Frontend:** Streamlit
+    - **Backend:** FastAPI (Python)
+    - **База данных:** PostgreSQL
+    - **Асинхронные задачи:** Celery
+    - **Брокер сообщений:** RabbitMQ
+    - **Кэш/Результаты задач:** Redis
+    - **Управление зависимостями:** Poetry
+    - **Контейнеризация:** Docker, Docker Compose
+    - **Миграции БД:** Alembic
+    - **Аутентификация:** JWT (Access & Refresh Tokens - *refresh token пока не реализован полностью*)
+    - **ML/DRL Модели (планируется):**
+        - Классическая оптимизация Марковица.
+        - Агенты глубокого обучения с подкреплением (DRL) для торговли.
+        - NLP-модели (например, FinBERT) для анализа тональности новостей.
+
+    **Текущий статус и известные проблемы:**
+    - Произведен рефакторинг большинства страниц Streamlit для работы через FastAPI бэкенд.
+    - Реализованы базовые CRUD операции для портфелей, активов (неявное создание через транзакции), транзакций.
+    - Интегрирован Celery с RabbitMQ (брокер) и Redis (результаты) для выполнения фоновых задач (анализ портфеля, новости, рекомендации, гипотетическое моделирование).
+    - Логика в Celery задачах пока что симулированная, требует наполнения реальными алгоритмами.
+    - **Проблема с Alembic миграциями:** Остается нерешенной проблема с `BACKEND_CORS_ORIGINS` и `sqlalchemy.exc.OperationalError` при `alembic upgrade head` в Docker. Требует дополнительной отладки конфигурации `.env` и/или `env.py` Alembic. *Пользователь временно пропустил этот шаг.*
+    - Streamlit приложение контейнеризировано.
+    - Некоторые страницы Streamlit (`render_dashboard`, `render_portfolio_optimization`, `render_model_training`, `render_model_comparison`, `render_backtest`) еще требуют полного рефакторинга для работы с API.
+    - Необходимо реализовать полноценную бизнес-логику в Celery-задачах.
+    - Уточнить требования к списку тикеров для `available_assets`.
+
+    **Дальнейшие шаги:**
+    1.  Реализация настоящей бизнес-логики в Celery задачах.
+    2.  Завершение рефакторинга оставшихся Streamlit страниц.
+    3.  Устранение проблем с Alembic миграциями.
+    4.  Развитие функционала MLOps с использованием ClearML.
+    5.  Улучшение UI/UX.
+
+    ---
+    *Разработчик: [Ваше Имя/Псевдоним]*
+    *Научный руководитель: [Имя Научного Руководителя]*
+    *Университет/Организация, Год*
+    """)
+
+
+# ... (остальной код файла app_pages.py, если есть) ...

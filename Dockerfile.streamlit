@@ -1,0 +1,32 @@
+# Use an official Python runtime as a parent image
+FROM python:3.10-slim
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Set environment variables for Streamlit
+ENV STREAMLIT_SERVER_PORT=8501 \
+    STREAMLIT_SERVER_HEADLESS=true \
+    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
+    PYTHONUNBUFFERED=1
+
+# Copy Streamlit application files
+# These files are expected to be in the context root when building this Docker image.
+# If the build context is the project root, these paths are correct.
+COPY auth_app.py ./auth_app.py
+COPY app_pages.py ./app_pages.py
+# If assets or custom CSS are used, copy them as well:
+# COPY assets /app/assets
+# COPY styles.css /app/styles.css
+
+# Install Streamlit and its direct dependencies.
+# Versions should ideally align with the main pyproject.toml to ensure compatibility.
+# Consider a separate requirements.txt for the frontend if dependencies diverge significantly.
+RUN pip install streamlit==1.33.0 requests==2.31.0 pandas==2.0.3 plotly==5.18.0
+
+# Expose the port Streamlit runs on
+EXPOSE 8501
+
+# Command to run the Streamlit app
+# Using CMD allows override from docker-compose. Ensures Streamlit binds to all interfaces.
+CMD ["streamlit", "run", "auth_app.py", "--server.address=0.0.0.0"] 

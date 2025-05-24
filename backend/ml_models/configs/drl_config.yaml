@@ -1,0 +1,112 @@
+# Hydra Configuration for DRL Pipeline (Deep Reinforcement Learning)
+
+# --- Global Settings ---
+project_name: "PortfolioOptimization/DRLAgents" # Updated for clarity
+global_tags: ["DRL", "PortfolioOptimization", "Rebalancing"]
+default_execution_queue: "default"
+
+# --- DRL Pipeline Parameters ---
+drl_pipeline_name: "DRL_Portfolio_Rebalancing_Pipeline"
+drl_pipeline_version: "0.2.0"
+run_pipeline_locally_after_definition: false
+
+pipeline_params:
+  portfolio_id: "CRYPTO_MAJOR_CAPS"
+
+# --- Data Preparation (data_preparation_drl.py) ---
+data_preparation:
+  task_name_prefix: "DRL_DataPrep"
+  default_portfolio_id: "ALL_ASSETS"
+
+  asset_tickers: ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
+  
+  input_market_data:
+    name_template: "market_data_{ticker}"
+    project: "PortfolioOptimization/Datasets"
+  
+  split:
+    train_start_date: "2020-01-01"
+    train_end_date: "2022-12-31"
+    trade_start_date: "2023-01-01"
+    trade_end_date: "2023-12-31"
+
+# --- DRL Specific Features ---
+drl_specific_features:
+  technical_indicators:
+    enabled: true
+    rsi:
+      enabled: true
+      window: 14
+    macd:
+      enabled: true
+      window_slow: 26
+      window_fast: 12
+      window_sign: 9
+    bollinger:
+      enabled: true
+      window: 20
+      window_dev: 2
+
+# --- DRL Environment (train_model_drl.py & evaluate_model_drl.py) ---
+env:
+  name: "StockPortfolioEnv_FinRL"
+  hmax: 100000
+  initial_amount: 1000000
+  buy_cost_pct: 0.001
+  sell_cost_pct: 0.001
+  reward_scaling: 1e-4
+  print_verbosity: 500
+  
+  tech_indicator_list: [
+    "rsi", 
+    "macd", "macd_signal",
+    "bb_mavg", "bb_hband", "bb_lband",
+    "change_pct"
+  ]
+
+# --- DRL Agent (train_model_drl.py) ---
+agent:
+  name: "PPO"
+  library: "StableBaselines3"
+  model_registry_name_prefix: "DRL_SB3_Agent" # Consistent prefix for ClearML OutputModel
+  
+  params:
+    policy: "MlpPolicy"
+    learning_rate: 0.0001
+    n_steps: 2048 
+    batch_size: 64
+    n_epochs: 10
+    gamma: 0.99
+    gae_lambda: 0.95
+    clip_range: 0.2
+    ent_coef: 0.01
+    verbose: 1
+    seed: 42
+
+# --- Model Training (train_model_drl.py) ---
+train_model:
+  task_name_prefix: "DRL_Train"
+  policy_name: ${agent.params.policy}
+  total_timesteps: 50000
+  log_interval: 1
+
+# --- Model Evaluation (evaluate_model_drl.py) ---
+evaluation:
+  task_name_prefix: "DRL_Evaluate"
+  deterministic_actions: true
+  finrl_env_print_verbosity: 0
+  generate_plots: true
+  plot_figsize: [15, 7]
+  plot_xlabel: "Date"
+  plot_ylabel: "Portfolio Value (USD)"
+  baseline_ticker: "BTCUSDT"
+
+# --- Model Registration (register_model_drl.py) ---
+registration:
+  task_name_prefix: "DRL_Register"
+  registered_model_name_prefix: "DRL_PortfolioRebalancer_Agent"
+  
+  metric_to_evaluate: "sharpe_ratio"
+  metric_threshold: 0.5
+  comparison_operator: "greater_than"
+  default_stage: "Production" 

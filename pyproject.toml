@@ -6,48 +6,91 @@ authors = [
     {name = "Igor Astashov",email = "igora@development.ru"}
 ]
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
-dependencies = [
-    "scipy (==1.14.1)",
-    "statsmodels (==0.14.4)",
-    "sktime (==0.36.0)",
-    "tqdm (>=4.67.1,<5.0.0)",
-    "requests (==2.31.0)",
-    "python-binance (==1.0.28)",
-    "matplotlib (==3.10.0)",
-    "plotly (==5.14.1)",
-    "nbformat (==5.10.4)",
-    "jinja2 (==3.1.4)",
-    "seaborn (==0.13.2)",
-    "finrl @ git+https://github.com/AI4Finance-Foundation/FinRL.git",
-    "pandas-market-calendars (>=5.0.0,<6.0.0)",
-    "streamlit (>=1.44.1,<2.0.0)",
-    "ta (==0.10.2)",
-    "ipython (==8.26.0)",
-    "finnhub-python (>=2.4.23,<3.0.0)",
-    "yfinance (>=0.2.57,<0.3.0)",
-    "mplfinance (>=0.12.10b0,<0.13.0)",
-    "backtrader (>=1.9.78.123,<2.0.0.0)",
-    "sec-api (>=1.0.32,<2.0.0)",
-    "pyautogen[retrievechat] (>=0.9,<0.10)",
-    "praw (>=7.8.1,<8.0.0)",
-    "tushare (>=1.4.21,<2.0.0)",
-    "pandas-datareader (>=0.10.0,<0.11.0)",
-    "openai>=1.3.0,<2.0.0",
-    "langchain (>=0.3.24,<0.4.0)",
-    "langchain-community (>=0.3.23,<0.4.0)",
-    "ipython-autotime (>=0.3.2,<0.4.0)",
-    "ollama (>=0.4.8,<0.5.0)",
-    "accelerate (>=1.6.0,<2.0.0)",
-    "bitsandbytes (>=0.45.5,<0.46.0)",
-    "akshare (>=1.16.85,<2.0.0)",
-    "parsel (>=1.10.0,<2.0.0)",
-    "pytz (>=2025.2,<2026.0)",
-    "ipywidgets (>=8.1.6,<9.0.0)",
-    "catboost (>=1.2.8,<2.0.0)"
-]
 
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"
+
+# Core FastAPI and Backend
+fastapi = "^0.104.1"
+uvicorn = {extras = ["standard"], version = "^0.24.0.post1"}
+sqlalchemy = {extras = ["postgresql-psycopg2binary"], version = "^2.0.23"}
+alembic = "^1.13.0"
+psycopg2-binary = "^2.9.9"
+python-jose = {extras = ["cryptography"], version = "^3.3.0"}
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+pydantic = "^2.5.2" # Keep this version, pydantic-settings might need specific pydantic
+pydantic-settings = "^2.1.0"
+celery = {extras = ["redis", "rabbitmq"], version = "^5.3.6"}
+redis = "^5.0.1"
+tenacity = "^8.2.3"
+email-validator = "^2.1.0.post1"
+python-multipart = ">=0.0.5" # Often needed with FastAPI for form data
+
+# HTTP client for communicating with other services
+httpx = ">=0.28.1"
+
+# Data Science, ML, Finance
+scipy = "1.14.1"
+statsmodels = "0.14.4"
+sktime = "0.36.0"
+tqdm = ">=4.67.1,<5.0.0"
+requests = "^2.31.0"
+python-binance = "1.0.28"
+matplotlib = "3.10.0"
+plotly = "5.14.1"
+nbformat = "5.10.4"
+jinja2 = "3.1.4"
+seaborn = "0.13.2"
+finrl = {git = "https://github.com/AI4Finance-Foundation/FinRL.git"}
+pandas-market-calendars = ">=5.0.0,<6.0.0"
+ta = "0.10.2"
+ipython = "8.26.0"
+finnhub-python = ">=2.4.23,<3.0.0"
+yfinance = ">=0.2.57,<0.3.0"
+mplfinance = ">=0.12.10b0,<0.13.0"
+backtrader = ">=1.9.78.123,<2.0.0.0"
+sec-api = ">=1.0.32,<2.0.0"
+pyautogen = {version = ">=0.9,<0.10", extras = ["retrievechat"]}
+praw = ">=7.8.1,<8.0.0"
+tushare = ">=1.4.21,<2.0.0"
+pandas-datareader = ">=0.10.0,<0.11.0"
+openai = ">=1.3.0,<2.0.0"
+langchain = ">=0.3.24,<0.4.0"
+langchain-community = ">=0.3.23,<0.4.0"
+ipython-autotime = ">=0.3.2,<0.4.0"
+ollama = ">=0.4.8,<0.5.0"
+accelerate = ">=1.6.0,<2.0.0"
+bitsandbytes = ">=0.45.5,<0.46.0"
+akshare = ">=1.16.85,<2.0.0"
+parsel = ">=1.10.0,<2.0.0"
+pytz = ">=2025.2,<2026.0"
+ipywidgets = ">=8.1.6,<9.0.0"
+catboost = "^1.2.8"
+scikit-learn = "^1.3.2"
+pandas = "^2.1.4"
+numpy = "^1.26.2"
+
+# DRL specific libraries
+stable-baselines3 = {extras = ["extra"], version = "^2.2.1"}
+gymnasium = "^0.29.1"
+
+# MLOps
+clearml = "^1.14.0"
+hydra-core = "^1.3.2"
+
+# Frontend
+streamlit = "^1.44.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.1.1"
+pytest-asyncio = "^0.23.6"
+flake8 = "^7.0.0"
+black = "^24.3.0"
+isort = "^5.13.2"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+# Removed the standalone 'dependencies' list as it's not standard for poetry
+# All dependencies should be under [tool.poetry.dependencies] or group dependencies.

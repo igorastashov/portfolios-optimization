@@ -1,0 +1,132 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    container_name: portfolio_postgres_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-portfolio_optimizer_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - portfolio_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-portfolio_optimizer_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: portfolio_redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - portfolio_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: portfolio_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-user}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-password}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"      # For AMQP
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"  # For Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq/
+    networks:
+      - portfolio_network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: portfolio_backend_api
+    command: bash -c "while ! nc -z db ${POSTGRES_PORT:-5432}; do sleep 1; done && alembic upgrade head && uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload"
+    volumes:
+      - ./backend:/app/backend
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@db:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-portfolio_optimizer_db}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_ALGORITHM=${JWT_ALGORITHM}
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=${JWT_ACCESS_TOKEN_EXPIRE_MINUTES}
+      - BACKEND_CORS_ORIGINS=${BACKEND_CORS_ORIGINS}
+      - CELERY_BROKER_URL=amqp://${RABBITMQ_USER:-user}:${RABBITMQ_PASSWORD:-password}@rabbitmq:5672/
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - portfolio_network
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: portfolio_celery_worker
+    command: bash -c "while ! nc -z db ${POSTGRES_PORT:-5432} || ! nc -z rabbitmq 5672; do sleep 1; done && celery -A backend.app.worker.celery_app worker -l info -Q main-queue -c 1"
+    volumes:
+      - ./backend:/app/backend
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@db:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-portfolio_optimizer_db}
+      - CELERY_BROKER_URL=amqp://${RABBITMQ_USER:-user}:${RABBITMQ_PASSWORD:-password}@rabbitmq:5672/
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - portfolio_network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    container_name: portfolio_streamlit_frontend
+    volumes:
+      - ./auth_app.py:/app/auth_app.py
+      - ./app_pages.py:/app/app_pages.py
+    ports:
+      - "${STREAMLIT_PORT:-8501}:8501"
+    environment:
+      - BACKEND_API_URL=http://backend:8000/api/v1
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+    depends_on:
+      - backend
+    networks:
+      - portfolio_network
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+
+networks:
+  portfolio_network:
+    driver: bridge 
